@@ -1,121 +1,54 @@
-<img src="./browser/icon.png" width="40" align="left" alt="Testcord">Testcord
+Lowcord is a fork of [Testcord](https://github.com/TestcordDev/TestCord), which is a fork of [Equicord](https://github.com/Equicord/Equicord), which is a fork of [Vencord](https://github.com/Vendicated/Vencord) — a Discord client mod focused on simplicity, performance, and user freedom.
 
-[![Release](https://img.shields.io/github/v/release/TestcordDev/TestCord?label=Latest+Release&color=blue)](https://github.com/TestcordDev/TestCord/releases/tag/untagged-5c75afbdfad18f944bcb)
-[![Discord](https://img.shields.io/discord/1434211283317690502?color=5865F2&label=Discord&logo=discord&logoColor=white)](https://discord.gg/EMDpkV57gW)
-[![Owner](https://img.shields.io/badge/Owner-Mixiruri-ff69b4?logo=github&logoColor=white)](https://github.com/Mixiruri)
-[![Owner](https://img.shields.io/badge/Owner-x2b1-red?logo=github&logoColor=white)](https://github.com/x2b1)
-[![Owner](https://img.shields.io/badge/Owner-dxrx99-orange?logo=github&logoColor=white)](https://github.com/dxrx99)
-
-Testcord is a fork of [Equicord](https://github.com/Equicord/Equicord) which is a fork of [Vencord](https://github.com/Vendicated/Vencord), with over 710 plugins.
-
-You can join our [Discord server](https://discord.gg/EMDpkV57gW) for commits, changes, chatting, or even support.
-
-## What makes Testcord different?
-
-- **710+ plugins**, more than any other fork
-- **No rules** on which plugins can be added
-- You decide what plugins you wanna use, not some admin that might not be comfortable with it (indi reference)
-- Less stable, more fun
-
-## Included Plugins
-
-Testcord's included plugins can be found [here](https://Testcord.dev).
-
-## Installing / Uninstalling
-
-**Windows**
-
-- [CLI](https://github.com/TestcordDev/TestCord/releases/download/latest/Testcord_installer_cli.exe)
-- [GUI](https://github.com/TestcordDev/TestCord/releases/download/latest/Testcord_installer.exe)
-
-**MacOS**
-
-- I hate MacOS so no ver for u, u can still use TC on goofcord tho.
-
-**Linux**
-
-- [CLI x11 & Wayland](https://github.com/TestcordDev/TestCord/releases/download/latest/Testcord_installer_cli-linux-x11-wayland)
-- [GUI x11 & Wayland](https://github.com/TestcordDev/TestCord/releases/download/latest/Testcord_installer-linux-x11-wayland)
-- [Wayland only](https://github.com/TestcordDev/TestCord/releases/download/latest/Testcord_installer-wayland)
-- [x11 only](https://github.com/TestcordDev/TestCord/releases/download/latest/Testcord_installer-x11)
-
-## Installing Testcord Devbuild — recommended
-
-shell:
-
-```sh
-bash -c "$(curl -sS https://raw.githubusercontent.com/TestcordDev/Testcord/refs/heads/main/misc/install.sh)"
-```
+## Installing
 
 ### Dependencies
 
-[Git](https://git-scm.com/) and [Node.JS LTS](https://nodejs.org/) are required.
+[Git](https://git-scm.com/) and [Node.js LTS](https://nodejs.org/) are required.
 
 Install `pnpm`:
-
-> ❗ This next command may need to be run as admin/root depending on your system, and you may need to close and reopen your terminal for pnpm to be in your PATH.
 
 ```sh
 npm i -g pnpm
 ```
 
-> ❗ **IMPORTANT** — Make sure you aren't using an admin/root terminal from here onwards. It will mess up your Discord/Testcord instance and you will most likely have to reinstall.
+> Close and reopen your terminal for pnpm to be in your PATH.
 
-Clone Testcord:
-
-```sh
-git clone https://github.com/TestcordDev/TestCord
-cd TestCord
-```
-
-Install dependencies:
+Clone and build:
 
 ```sh
+git clone https://github.com/TestcordDev/TestCord lowcord
+cd lowcord
 pnpm install --frozen-lockfile
-```
-
-Build Testcord:
-
-```sh
 pnpm build
+pnpm inject
 ```
 
-You can also build dev (additional plugins) (not required):
+For the dev build (includes experimental plugins):
 
 ```sh
 pnpm dev
 ```
 
-Inject Testcord into your desktop client:
-
-```sh
-pnpm inject
-```
-
-Build Testcord for web:
+For the web extension:
 
 ```sh
 pnpm buildWeb
 ```
 
-After building Testcord's web extension, locate the appropriate ZIP file in the `dist` directory and follow your browser's guide for installing custom extensions, if supported.
-
-> Note: Firefox extension zip requires Firefox for Developers
+The web extension ZIP will be in the `dist` directory. Load it in your browser — Firefox requires Firefox Developer Edition.
 
 ## Credits
 
-- [Thororen](https://github.com/thororen1234) for creating [Equicord](https://github.com/Equicord/Equicord)
-- [Vendicated](https://github.com/Vendicated) for creating [Vencord](https://github.com/Vendicated/Vencord)
-- [verticalsync](https://github.com/verticalsync) for [Suncord](https://github.com/verticalsync/Suncord)
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=TestcordDev/testcord&type=Date)](https://www.star-history.com/#TestcordDev/Testcord&type=date&legend=bottom-right)
+- [Testcord](https://github.com/TestcordDev/TestCord) — the upstream fork
+- [Equicord](https://github.com/Equicord/Equicord) — by Thororen
+- [Vencord](https://github.com/Vendicated/Vencord) — by Vendicated
 
 ## Disclaimer
 
-Discord is a trademark of Discord Inc., and solely mentioned for the sake of descriptivity. Mentioning it does not imply any affiliation with or endorsement by Discord Inc. Testcord is not affiliated with Equicord or Vencord.
+Discord is a trademark of Discord Inc. Mentioning it does not imply any affiliation with or endorsement by Discord Inc. Lowcord is not affiliated with Discord Inc., Testcord, Equicord, or Vencord.
 
 <details>
-<summary>⚠️ Using Testcord, Equicord or Vencord violates Discord's Terms of Service</summary><p>Any discord custom client is against TOS obviously, we never saw anyone getting banned for it yet tho, unless you abuse (and by that i really mean abuse the shi outta it) the risky plugins like statusRotation / sendtoalldms etc.. if you use them normally you are gonna be fine. </p>
+<summary>Using custom Discord clients violates Discord's Terms of Service</summary>
+Discord's ToS prohibits third-party clients. In practice, bans are rare and only happen when abusing high-risk features. Use responsibly.
 </details>
