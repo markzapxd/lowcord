@@ -1,15 +1,15 @@
 {
-    "name": "testcord",
+    "name": "lowcord",
     "private": "true",
     "version": "2.0.0",
     "description": "The less stable fork of Equicord",
-    "homepage": "https://github.com/TestcordDev/Testcord#readme",
+    "homepage": "https://github.com/TestcordDev/LowCord#readme",
     "bugs": {
-        "url": "https://github.com/TestcordDev/Testcord/issues"
+        "url": "https://github.com/TestcordDev/LowCord/issues"
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/TestcordDev/Testcord.git"
+        "url": "git+https://github.com/TestcordDev/LowCord.git"
     },
     "license": "GPL-3.0-or-later",
     "author": "x2b",
@@ -27,7 +27,7 @@
         "generatePluginJson": "tsx scripts/generatePluginList.ts",
         "generateEquicordPluginJson": "tsx scripts/generatePluginList.ts --equicord",
         "generateVencordPluginJson": "tsx scripts/generatePluginList.ts --vencord",
-        "generateTestcordPluginJson": "tsx scripts/generatePluginList.ts --testcord",
+        "generateLowcordPluginJson": "tsx scripts/generatePluginList.ts --lowcord",
         "generateTypes": "tspc --emitDeclarationOnly --declaration --outDir packages/vencord-types --allowJs false",
         "inject": "node scripts/runInstaller.mjs -- --install",
         "uninject": "node scripts/runInstaller.mjs -- --uninstall",

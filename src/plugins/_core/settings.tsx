@@ -98,7 +98,7 @@ interface SettingsLayoutBuilder {
 const settings = definePluginSettings({
     settingsLocation: {
         type: OptionType.SELECT,
-        description: "Where to put the Testcord settings section",
+        description: "Where to put the Lowcord settings section",
         options: [
             { label: "At the very top", value: "top" },
             { label: "Above the Nitro section", value: "aboveNitro", default: true },
@@ -192,8 +192,8 @@ export default definePlugin({
         const equicordEntries: SettingsLayoutNode[] = [
             buildEntry({
                 key: "equicord_main",
-                title: "Testcord",
-                panelTitle: "Testcord Settings",
+                title: "Lowcord",
+                panelTitle: "Lowcord Settings",
                 Component: VencordTab,
                 Icon: MainSettingsIcon
             }),

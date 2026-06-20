@@ -287,13 +287,13 @@ export default definePlugin({
 
     commands: [
         {
-            name: "testcord-debug",
-            description: "Send Testcord debug info",
+            name: "lowcord-debug",
+            description: "Send Lowcord debug info",
             execute: async () => ({ content: await generateDebugInfoMessage() })
         },
         {
-            name: "testcord-plugins",
-            description: "Send Testcord plugin list",
+            name: "lowcord-plugins",
+            description: "Send Lowcord plugin list",
             execute: async () => {
                 const { stock, user } = getEnabledPlugins();
                 const totalCount = stock.length + user.length;
@@ -377,7 +377,7 @@ export default definePlugin({
                             onCancel={() => openSettingsTabModal(UpdaterTab!)}
                         >
                             <div>
-                                <Paragraph>You are using an outdated version of Testcord! Chances are, your issue is already fixed.</Paragraph>
+                                <Paragraph>You are using an outdated version of Lowcord! Chances are, your issue is already fixed.</Paragraph>
                                 <Paragraph className={Margins.top8}>
                                     Please first update before asking for support!
                                 </Paragraph>
@@ -403,7 +403,7 @@ export default definePlugin({
                         variant="primary"
                     >
                         <div>
-                            <Paragraph>You are using an externally updated Testcord version, which we may provide less support for!</Paragraph>
+                            <Paragraph>You are using an externally updated Lowcord version, which we may provide less support for!</Paragraph>
                             <Paragraph className={Margins.top8}>
                                 Please either switch to an <Link href="https://discord.gg/KTNXyDTXGb">officially supported version of Equicord</Link>, or
                                 contact your package maintainer for support instead.
@@ -454,21 +454,21 @@ export default definePlugin({
         }
 
         if (testCordSupport && isSupportChannel(props.channel.id) && PermissionStore.can(PermissionsBits.SEND_MESSAGES, props.channel)) {
-            if (props.message.content.includes("/testcord-debug") || props.message.content.includes("/testcord-plugins")) {
+            if (props.message.content.includes("/lowcord-debug") || props.message.content.includes("/lowcord-plugins")) {
                 buttons.push(
                     <Button
                         key="vc-dbg"
                         variant="secondary"
                         onClick={async () => sendMessage(props.channel.id, { content: await generateDebugInfoMessage() })}
                     >
-                        Run /testcord-debug
+                        Run /lowcord-debug
                     </Button>,
                     <Button
                         key="vc-plg-list"
                         variant="secondary"
                         onClick={async () => {
-                            // If the message is exactly "/testcord-plugins", delete it to avoid showing the command text
-                            if (props.message.content.trim() === "/testcord-plugins") {
+                            // If the message is exactly "/lowcord-plugins", delete it to avoid showing the command text
+                            if (props.message.content.trim() === "/lowcord-plugins") {
                                 try {
                                     await DiscordNative.http.delete(`${DiscordNative.http.getAPIBaseURL()}/channels/${props.channel.id}/messages/${props.message.id}`);
                                 } catch (e) {
@@ -529,7 +529,7 @@ export default definePlugin({
                             }
                         }}
                     >
-                        Run /testcord-plugins
+                        Run /lowcord-plugins
                     </Button>
                 );
             }
@@ -576,7 +576,7 @@ renderContributorDmWarningCard: ErrorBoundary.wrap(({ channel }) => {
 
     return (
         <Card variant="warning" className={Margins.top8} defaultPadding>
-            Please do not private message Testcord / Equicord / Vencord Developers / Plugin Devs for support!
+            Please do not private message Lowcord / Equicord / Vencord Developers / Plugin Devs for support!
             <br />
             Instead, use the support channel: {Parser.parse("https://discord.com/channels/1434211283317690502/1434228141123047434")}
             {!ChannelStore.getChannel(SUPPORT_CHANNEL_ID) && " (Click the link to join)"}

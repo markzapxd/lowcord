@@ -125,8 +125,8 @@ export function PluginCard({ plugin, disabled, onRestartNeeded, onMouseEnter, on
         {
             condition: isTestcordPlugin,
             src: "https://raw.githubusercontent.com/TestcordDev/TestCord/refs/heads/main/browser/icon.png",
-            alt: "TestCord",
-            title: "TestCord Plugin"
+            alt: "LowCord",
+            title: "LowCord Plugin"
         },
         {
             condition: isBDPlugin,

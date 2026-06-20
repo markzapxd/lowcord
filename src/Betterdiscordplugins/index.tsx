@@ -13,7 +13,7 @@ const logger = new Logger("BetterDiscordPlugins", "#ff7373");
 export default definePlugin({
     name: "BetterDiscordPlugins",
     description: "Load BetterDiscord .plugin.js files. Place your plugins in the Betterdiscordplugins folder.",
-    authors: [{ name: "Testcord Team", id: 0n }],
+    authors: [{ name: "Lowcord Team", id: 0n }],
     version: "1.0.0",
     required: true,
     tags: ["betterdiscord", "bd", "loader"],

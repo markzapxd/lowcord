@@ -63,7 +63,7 @@ function VencordPopoutButton() {
                     ref={buttonRef}
                     className="vc-toolbox-btn"
                     onClick={() => setShow(v => !v)}
-                    tooltip={isShown ? null : "Testcord Toolbox"}
+                    tooltip={isShown ? null : "Lowcord Toolbox"}
                     icon={Icon}
                     selected={isShown}
                 />
@@ -72,10 +72,10 @@ function VencordPopoutButton() {
     );
 }
 
-migratePluginSettings("TestcordToolbox", "EquicordToolbox");
+migratePluginSettings("TestcordToolbox", "LowcordToolbox");
 export default definePlugin({
-    name: "TestcordToolbox",
-    description: "Adds a button next to the inbox button in the channel header that houses Testcord quick actions",
+    name: "LowcordToolbox",
+    description: "Adds a button next to the inbox button in the channel header that houses Lowcord quick actions",
     tags: ["Voice", "Accessibility"],
     authors: [Devs.Ven, Devs.AutumnVN],
     dependencies: ["HeaderBarAPI"],

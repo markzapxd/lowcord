@@ -1,6 +1,6 @@
 /**
  * @name SimpleAnimations
- * @author Testcord Team
+ * @author Lowcord Team
  * @version 1.0.0
  * @description Simple CSS animations for Discord - works in browser context
  * @source https://github.com/TestcordDev/Testcord
@@ -179,7 +179,7 @@ module.exports = {
                     <strong style="color: #f04747;">⚠️ Why BetterAnimations Doesn't Work:</strong>
                     <p style="color: #b9bbbe; font-size: 13px; margin: 8px 0 0 0;">
                         BetterAnimations requires Node.js modules (fs, path, electron) that only work in
-                        BetterDiscord's desktop environment. Testcord runs in the browser context where
+                        BetterDiscord's desktop environment. Lowcord runs in the browser context where
                         these modules don't exist.
                     </p>
                 </div>

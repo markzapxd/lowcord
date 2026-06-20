@@ -8,9 +8,9 @@ import { DataStore } from "@api/index";
 
 import type { NativeCordCatResult, NativeOSINTResponse } from "./native";
 
-const DS_API_KEY = "testcord-osint-api-key";
-const DS_API_URL = "testcord-osint-api-url";
-const DS_MODEL = "testcord-osint-model";
+const DS_API_KEY = "lowcord-osint-api-key";
+const DS_API_URL = "lowcord-osint-api-url";
+const DS_MODEL = "lowcord-osint-model";
 
 // ── Native IPC fetch ────────────────────────────────────────────────────────
 

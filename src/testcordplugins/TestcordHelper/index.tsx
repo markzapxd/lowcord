@@ -45,7 +45,7 @@ const _m4 = getUserSettingLazy<boolean>("textAndImages", "renderEmbeds")!;
 const _mUsageHistory: number[] = [];
 let _memInterval: ReturnType<typeof setInterval> | null = null;
 
-const PLUGIN_PATTERN = /testcordplugin:(\w+)/gi;
+const PLUGIN_PATTERN = /lowcordplugin:(\w+)/gi;
 
 function _startMemLogging() {
     if (_memInterval) return;
@@ -77,7 +77,7 @@ function _gMem(): string {
 const settings = definePluginSettings({
     enableCustomBadges: {
         type: OptionType.BOOLEAN,
-        description: "Enable custom testcord badges from tbadges GitHub repository",
+        description: "Enable custom Lowcord badges from tbadges GitHub repository",
         default: true,
     }
 });
@@ -107,7 +107,7 @@ async function _gDebug() {
 
     const _plat = IS_DISCORD_DESKTOP ? "Windows" : IS_WEB ? "Web" : "Unknown";
     const _info = {
-        Testcord: `v${(globalThis as any).VERSION} • ${gitHashShort} — ${Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format((globalThis as any).BUILD_TIMESTAMP)}`,
+        Lowcord: `v${(globalThis as any).VERSION} • ${gitHashShort} — ${Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format((globalThis as any).BUILD_TIMESTAMP)}`,
         Client: `${RELEASE_CHANNEL} ~ ${_c}`,
         Platform: _plat,
         "JS Memory": _gMem(),
@@ -322,8 +322,8 @@ const PluginCards = ErrorBoundary.wrap(function PluginCards({ message }: { messa
 }, { noop: true });
 
 export default definePlugin({
-    name: "TestcordHelper",
-    description: "Helper plugin for Testcord features, including custom badge management, debug reporting, and plugin info cards.",
+    name: "LowcordHelper",
+    description: "Helper plugin for Lowcord features, including custom badge management, debug reporting, and plugin info cards.",
     tags: ["Utility", "Developers"],
     authors: [{ name: "x2b", id: 996137713432530976n }],
     required: true,

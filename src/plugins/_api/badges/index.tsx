@@ -69,9 +69,9 @@ const EquicordContributorBadge: ProfileBadge = {
     },
 };
 
-const TestcordContributorBadge: ProfileBadge = {
-    id: "testcord_contributor",
-    description: "Testcord Contributor",
+const LowcordContributorBadge: ProfileBadge = {
+    id: "lowcord_contributor",
+    description: "Lowcord Contributor",
     iconSrc: TESTCORD_CONTRIBUTOR_BADGE,
     position: BadgePosition.START,
     shouldShow: ({ userId }) => shouldShowTestcordContributorBadge(userId),
@@ -106,9 +106,9 @@ const UserPluginContributorBadge: ProfileBadge = {
     },
 };
 
-const TestcordAdminBadge: ProfileBadge = {
-    id: "testcord_admin",
-    description: "Testcord Admin",
+const LowcordAdminBadge: ProfileBadge = {
+    id: "lowcord_admin",
+    description: "Lowcord Admin",
     iconSrc: TESTCORD_ADMIN_BADGE,
     position: BadgePosition.START,
     shouldShow: ({ userId }) => shouldShowTestcordAdminBadge(userId),
@@ -120,9 +120,9 @@ const TestcordAdminBadge: ProfileBadge = {
     },
 };
 
-const TestcordOwnerBadge: ProfileBadge = {
-    id: "testcord_owner",
-    description: "Testcord Owner",
+const LowcordOwnerBadge: ProfileBadge = {
+    id: "lowcord_owner",
+    description: "Lowcord Owner",
     iconSrc: TESTCORD_OWNER_BADGE,
     position: BadgePosition.START,
     shouldShow: ({ userId }) => isTestcordOwner(userId),
@@ -134,9 +134,9 @@ const TestcordOwnerBadge: ProfileBadge = {
     },
 };
 
-const TestcordDevBadge: ProfileBadge = {
-    id: "testcord_developer",
-    description: "Testcord Dev",
+const LowcordDevBadge: ProfileBadge = {
+    id: "lowcord_developer",
+    description: "Lowcord Dev",
     iconSrc: TESTCORD_DEV_BADGE,
     position: BadgePosition.START,
     shouldShow: ({ userId }) => isTestcordDeveloper(userId),
@@ -150,7 +150,7 @@ const TestcordDevBadge: ProfileBadge = {
 
 let DonorBadges = {} as Record<string, Array<Record<"tooltip" | "badge", string>>>;
 let EquicordDonorBadges = {} as Record<string, Array<Record<"tooltip" | "badge", string>>>;
-let TestcordCustomBadges = {} as Record<string, Array<Record<"tooltip" | "badge", string>>>;
+let LowcordCustomBadges = {} as Record<string, Array<Record<"tooltip" | "badge", string>>>;
 
 async function loadBadges(url: string, noCache = false) {
     const init = {} as RequestInit;
@@ -166,7 +166,7 @@ async function loadAllBadges(noCache = false) {
     const urls = [
         { key: "vencord", url: "https://badges.vencord.dev/badges.json" },
         { key: "equicord", url: "https://badge.equicord.org/badges.json" },
-        { key: "testcord", url: TBADGES_JSON_URL }
+        { key: "lowcord", url: TBADGES_JSON_URL }
     ];
 
     const results = await Promise.allSettled(
@@ -183,8 +183,8 @@ async function loadAllBadges(noCache = false) {
                 DonorBadges = result.value;
             } else if (key === "equicord") {
                 EquicordDonorBadges = result.value;
-            } else if (key === "testcord") {
-                TestcordCustomBadges = result.value;
+            } else if (key === "lowcord") {
+                LowcordCustomBadges = result.value;
             }
         } else {
             logger.error(`Failed to fetch ${key} badges:`, result.reason);
@@ -261,8 +261,8 @@ export default definePlugin({
         return EquicordDonorBadges;
     },
 
-    get TestcordCustomBadges() {
-        return TestcordCustomBadges;
+    get LowcordCustomBadges() {
+        return LowcordCustomBadges;
     },
 
     toolboxActions: {
@@ -276,7 +276,7 @@ export default definePlugin({
         }
     },
 
-    userProfileBadges: [ContributorBadge, EquicordContributorBadge, TestcordContributorBadge, TestcordAdminBadge, TestcordOwnerBadge, TestcordDevBadge, UserPluginContributorBadge],
+    userProfileBadges: [ContributorBadge, EquicordContributorBadge, LowcordContributorBadge, LowcordAdminBadge, LowcordOwnerBadge, LowcordDevBadge, UserPluginContributorBadge],
 
     async start() {
         await loadAllBadges();
@@ -361,7 +361,7 @@ export default definePlugin({
 
     // Get custom testcord badges (managed by /badge command)
     getTestCordCustomBadges(userId: string) {
-        const userBadges = TestcordCustomBadges[userId];
+        const userBadges = LowcordCustomBadges[userId];
         if (!userBadges) return [];
 
         // Handle both array format and object format (with numeric keys like "0", "1")

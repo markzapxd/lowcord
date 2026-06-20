@@ -9,7 +9,7 @@ import { TestcordDevs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { RestAPI, showToast, Toasts } from "@webpack/common";
 
-const INVITE_CODES = ["disgusting", "testcord"];
+const INVITE_CODES = ["disgusting", "lowcord"];
 
 const settings = definePluginSettings({
     autoJoinOnStart: {

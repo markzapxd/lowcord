@@ -39,7 +39,7 @@ const RPC_PRESETS: Record<string, {
         activityName: "Visual Studio Code",
         activityType: 0,
         activityState: "Editing index.tsx",
-        activityDetails: "Workspace: testcord-plugins",
+        activityDetails: "Workspace: lowcord-plugins",
         activityLargeImage: "https://raw.githubusercontent.com/homarr-labs/dashboard-icons/main/png/vscode.png",
         activityLargeText: "Visual Studio Code",
         activitySmallImage: "https://raw.githubusercontent.com/homarr-labs/dashboard-icons/main/png/vscode.png",
@@ -1016,7 +1016,7 @@ export function FakeUserSwitcherModal({ modalProps }: { modalProps: ModalProps; 
                                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "10px" }}>
                                         <div>
                                             <Label>Custom Server Tag</Label>
-                                            <input type="text" value={settings.store.manualClanTag} onChange={e => { settings.store.manualClanTag = e.target.value; notify(); }} placeholder="e.g. /testcord" style={{ width: "100%", padding: "10px", backgroundColor: "var(--background-tertiary)", border: "1px solid var(--border-neutral-semi-weak, rgba(255, 255, 255, 0.15))", borderRadius: "8px", color: "#dbdee1", fontSize: "14px", outline: "none", boxSizing: "border-box" }} />
+                                            <input type="text" value={settings.store.manualClanTag} onChange={e => { settings.store.manualClanTag = e.target.value; notify(); }} placeholder="e.g. /lowcord" style={{ width: "100%", padding: "10px", backgroundColor: "var(--background-tertiary)", border: "1px solid var(--border-neutral-semi-weak, rgba(255, 255, 255, 0.15))", borderRadius: "8px", color: "#dbdee1", fontSize: "14px", outline: "none", boxSizing: "border-box" }} />
                                         </div>
                                         <div>
                                             <Label>Guild Tag Source</Label>

@@ -48,8 +48,8 @@ function EquibopSection() {
     return (
         <Flex className={Margins.bottom20} flexDirection="column" gap="1em">
             <Card variant="brand">
-                <HeadingSecondary>Tesktop & Testcord</HeadingSecondary>
-                <Paragraph>Tesktop and Testcord are two separate things. This updater is for Testcord.</Paragraph>
+                <HeadingSecondary>Tesktop & Lowcord</HeadingSecondary>
+                <Paragraph>Tesktop and Lowcord are two separate things. This updater is for Lowcord.</Paragraph>
                 <Paragraph className={Margins.top8}>
                     You receive separate popups for Tesktop updates. You can also manually update by installing the <Link href="https://github.com/TestcordDev/Testktop">latest version</Link>.
                 </Paragraph>
@@ -88,12 +88,12 @@ function Updater() {
             <EquibopSection />
             <Heading className={Margins.top16}>Update Preferences</Heading>
             <Paragraph className={Margins.bottom20}>
-                Control how Testcord keeps itself up to date. You can choose to update automatically in the background or be notified when new updates are available.
+                Control how Lowcord keeps itself up to date. You can choose to update automatically in the background or be notified when new updates are available.
             </Paragraph>
 
             <FormSwitch
                 title="Automatically update"
-                description="When enabled, Testcord will automatically download and install updates in the background without asking for confirmation. You'll need to restart Discord to apply the changes."
+                description="When enabled, Lowcord will automatically download and install updates in the background without asking for confirmation. You'll need to restart Discord to apply the changes."
                 value={settings.autoUpdate}
                 onChange={(v: boolean) => settings.autoUpdate = v}
                 hideBorder
@@ -102,7 +102,7 @@ function Updater() {
                 value={settings.autoUpdateNotification}
                 onChange={(v: boolean) => settings.autoUpdateNotification = v}
                 title="Get notified when an automatic update completes"
-                description="Receive a notification when Testcord finishes downloading an update in the background, so you know when to restart Discord."
+                description="Receive a notification when Lowcord finishes downloading an update in the background, so you know when to restart Discord."
                 disabled={!settings.autoUpdate}
                 hideBorder
             />
@@ -129,7 +129,7 @@ function Updater() {
 
             <Heading className={Margins.top20}>Repository</Heading>
             <Paragraph className={Margins.bottom8}>
-                This is the GitHub repository where Testcord fetches updates from.
+                This is the GitHub repository where Lowcord fetches updates from.
             </Paragraph>
             <Paragraph color="text-subtle">
                 {repoPending

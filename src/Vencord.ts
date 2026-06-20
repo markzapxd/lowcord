@@ -146,7 +146,7 @@ async function runUpdateCheck() {
                 notifiedForUpdatesThisSession = true;
 
                 showNotice(
-                    "Testcord has been updated for u!",
+                    "Lowcord has been updated for u!",
                     "Restart",
                     relaunch
                 );
@@ -158,7 +158,7 @@ async function runUpdateCheck() {
         notifiedForUpdatesThisSession = true;
 
         showNotice(
-            "A new version of Testcord is available!",
+            "A new version of Lowcord is available!",
             "View Update",
             () => openSettingsTabModal(UpdaterTab!)
         );
@@ -176,7 +176,7 @@ function initTrayIpc() {
             VencordNative.tray.setUpdateState(isOutdated);
 
             if (isOutdated) {
-                showNotice("A Testcord update is available!", "View Update", () => openSettingsTabModal(UpdaterTab!));
+                showNotice("A Lowcord update is available!", "View Update", () => openSettingsTabModal(UpdaterTab!));
             } else {
                 showNotice("No updates available, you're on the latest version!", "OK", popNotice);
             }

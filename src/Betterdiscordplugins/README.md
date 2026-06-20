@@ -1,6 +1,6 @@
-# BetterDiscord Plugins for Testcord
+# BetterDiscord Plugins for Lowcord
 
-This folder is for BetterDiscord (.plugin.js) plugins. Testcord now supports loading BetterDiscord plugins directly!
+This folder is for BetterDiscord (.plugin.js) plugins. Lowcord now supports loading BetterDiscord plugins directly!
 
 ## How to Use
 
@@ -13,9 +13,9 @@ This folder is for BetterDiscord (.plugin.js) plugins. Testcord now supports loa
 
 2. **Place them in this folder** (`Betterdiscordplugins`)
 
-3. **Build Testcord** - Run `pnpm build` or `pnpm build --dev` for development
+3. **Build Lowcord** - Run `pnpm build` or `pnpm build --dev` for development
 
-4. **Enable plugins** in Testcord settings under "BetterDiscord Plugins"
+4. **Enable plugins** in Lowcord settings under "BetterDiscord Plugins"
 
 ### Manual Plugin Loading
 
@@ -66,7 +66,7 @@ module.exports = {
 
 ## BdApi Support
 
-Testcord provides a compatibility layer for the BetterDiscord API:
+Lowcord provides a compatibility layer for the BetterDiscord API:
 
 ### Available APIs
 
@@ -118,13 +118,13 @@ Not all BetterDiscord plugins may work perfectly due to:
 1. Check the console for errors
 2. Ensure the plugin has a valid meta block
 3. Verify the plugin is enabled in settings
-4. Try rebuilding Testcord: `pnpm build`
+4. Try rebuilding Lowcord: `pnpm build`
 
 ### Plugin Causing Issues
 
 1. Disable the plugin in settings
 2. Remove the `.plugin.js` file from the folder
-3. Rebuild Testcord
+3. Rebuild Lowcord
 
 ### Debug Mode
 
@@ -143,12 +143,12 @@ TestcordBD.reloadAll();
 
 ## Development
 
-To create a new BetterDiscord plugin for Testcord:
+To create a new BetterDiscord plugin for Lowcord:
 
 1. Create a `.plugin.js` file with the meta block
 2. Implement `start()` and `stop()` methods
 3. Use BdApi for Discord interactions
-4. Test in Testcord's development mode
+4. Test in Lowcord's development mode
 
 ## Security Notice
 
@@ -156,4 +156,4 @@ To create a new BetterDiscord plugin for Testcord:
 
 ## License
 
-This BetterDiscord compatibility layer is part of Testcord and follows the same license (GPL-3.0-or-later).
+This BetterDiscord compatibility layer is part of Lowcord and follows the same license (GPL-3.0-or-later).

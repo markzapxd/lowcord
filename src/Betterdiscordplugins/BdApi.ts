@@ -1288,7 +1288,7 @@ const BdComponents = {
 };
 
 export class BdApiClass {
-    static version: string = "Testcord BD Compatibility Layer v2.0 (Enhanced)";
+    static version: string = "Lowcord BD Compatibility Layer v2.0 (Enhanced)";
     static Plugins: any;
     static Themes: any;
     static Patcher: PatcherManager;

@@ -65,7 +65,7 @@ interface DiscordDesktopCore {
     __equicordStartupWrapped?: boolean;
 }
 
-const error = (...args: unknown[]) => console.error("[Testcord:HostUpdate]", ...args);
+const error = (...args: unknown[]) => console.error("[Lowcord:HostUpdate]", ...args);
 
 const hookedUpdaters = new WeakSet<DiscordHostUpdater>();
 let hooked = false;

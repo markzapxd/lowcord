@@ -106,6 +106,7 @@ const globNativesPlugin = {
                 "userplugins",
                 "equicordplugins",
                 "testcordplugins",
+                "lowcordplugins",
                 "Betterdiscordplugins",
             ];
             let code = "";

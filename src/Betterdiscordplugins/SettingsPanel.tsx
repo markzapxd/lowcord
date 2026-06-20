@@ -110,7 +110,7 @@ export function BDPluginsSettingsPanel() {
                     1. Download BetterDiscord plugins (.plugin.js files)
                 </Forms.FormText>
                 <Forms.FormText>
-                    2. Place them in the Betterdiscordplugins folder in your Testcord data directory
+                    2. Place them in the Betterdiscordplugins folder in your Lowcord data directory
                 </Forms.FormText>
                 <Forms.FormText>
                     3. Reload plugins or restart Discord

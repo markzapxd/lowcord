@@ -109,6 +109,7 @@ const SearchStatus = {
     USER_PLUGINS: 7,
     API_PLUGINS: 8,
     BETTERDISCORD: 9,
+    LOWCORD: 10,
 } as const;
 
 type SearchStatus = typeof SearchStatus[keyof typeof SearchStatus];
@@ -226,13 +227,13 @@ export default function PluginSettings() {
         for (const plugin of sortedPlugins) {
             const meta = PluginMeta[plugin.name];
             const folder = meta ? meta.folderName : "";
-            const category = folder.startsWith("src/testcordplugins/") ? "Testcord" : folder.startsWith("src/equicordplugins/") ? "Equicord" : folder.startsWith("src/plugins/") ? "Vencord" : "Other";
+            const category = folder.startsWith("src/testcordplugins/") ? "Lowcord" : folder.startsWith("src/lowcordplugins/") ? "Lowcord" : folder.startsWith("src/equicordplugins/") ? "Equicord" : folder.startsWith("src/plugins/") ? "Vencord" : "Other";
             for (const author of (plugin.authors || [])) {
                 if (!author || !author.name) continue;
                 if (!authors.has(author.name)) authors.set(author.name, { category, github: (author as any).github });
             }
         }
-        const grouped: Record<string, string[]> = { Testcord: [], Equicord: [], Vencord: [], Other: [] };
+            const grouped: Record<string, string[]> = { Lowcord: [], Equicord: [], Vencord: [], Other: [] };
         for (const [name, info] of authors.entries()) grouped[info.category].push(name);
         const result: Array<{ label: string; value: string; github: string; }> = [];
         for (const [cat, names] of Object.entries(grouped)) {
@@ -275,6 +276,9 @@ export default function PluginSettings() {
                 if (!pluginMetaInfo) return false;
                 return pluginMetaInfo.folderName?.startsWith("src/Betterdiscordplugins/") ||
                     plugin.tags?.includes("betterdiscord");
+            case SearchStatus.LOWCORD:
+                if (!PluginMeta[plugin.name].folderName.startsWith("src/lowcordplugins/")) return false;
+                break;
         }
 
         if (tags.length && tags.some(t => !plugin.tags?.includes(t))) return false;
@@ -468,11 +472,12 @@ export default function PluginSettings() {
                             { label: "Show Enabled", value: SearchStatus.ENABLED },
                             { label: "Show Disabled", value: SearchStatus.DISABLED },
                             { label: "Show Equicord", value: SearchStatus.EQUICORD },
-                            { label: "Show Testcord", value: SearchStatus.TESTCORD },
+                            { label: "Show Lowcord", value: SearchStatus.TESTCORD },
                             { label: "Show Vencord", value: SearchStatus.VENCORD },
                             { label: "Show New", value: SearchStatus.NEW },
                             hasUserPlugins && { label: "Show UserPlugins", value: SearchStatus.USER_PLUGINS },
                             { label: "Show API Plugins", value: SearchStatus.API_PLUGINS },
+                            { label: "Show Lowcord", value: SearchStatus.LOWCORD },
                             { label: "Show BetterDiscord", value: SearchStatus.BETTERDISCORD },
                         ].filter(isTruthy)}
                         serialize={String}
