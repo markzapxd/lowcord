@@ -4,8 +4,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-
-
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { EquicordDevs, TestcordDevs } from "@utils/constants";
 import definePlugin from "@utils/types";
@@ -49,18 +47,15 @@ function getGuildIdFromArgs(args: any[]): string | null {
 }
 
 const ContextMenuPatch: NavContextMenuPatchCallback = (children, { guild }: { guild: Guild; }) => {
-    const [checked, setChecked] = React.useState(godModeEnabledGuilds.has(guild.id));
-
     children.push(
         <Menu.MenuSeparator />,
         <Menu.MenuCheckboxItem
             id="bgm-toggle-god-mode"
             label="God Mode"
-            checked={checked}
+            checked={godModeEnabledGuilds.has(guild.id)}
             action={() => {
-                if (checked) godModeEnabledGuilds.delete(guild.id);
+                if (godModeEnabledGuilds.has(guild.id)) godModeEnabledGuilds.delete(guild.id);
                 else godModeEnabledGuilds.add(guild.id);
-                setChecked(!checked);
             }}
         />
     );
@@ -70,7 +65,7 @@ export default definePlugin({
     name: "BetterGodMode [Risky]",
     description: "Get all permissions on any guild (client-side)",
     authors: [EquicordDevs.TheArmagan, TestcordDevs.sirphantom89],
-    
+
     settingsAboutComponent: () => (
         <Forms.FormText className="plugin-warning">
             Usage of this plugin might get detected by Discord. Use this plugin at your own risk!
@@ -80,20 +75,20 @@ export default definePlugin({
     start: () => {
         NeedsToBePatchedFns.forEach(fnName => {
             if (typeof PermissionStore[fnName] !== "function") return;
-            
+
             OriginalFns[fnName] = PermissionStore[fnName];
 
             PermissionStore[fnName] = function (...args: any[]) {
                 const guildId = getGuildIdFromArgs(args);
-                
+
                 if (guildId && godModeEnabledGuilds.has(guildId)) {
                     // Return the correct data type based on the function name
                     if (BigIntFns.includes(fnName)) {
-                        return ADMINISTRATOR_PERMISSION; 
+                        return ADMINISTRATOR_PERMISSION;
                     }
                     return true;
                 }
-                
+
                 return OriginalFns[fnName].apply(this, args);
             };
         });

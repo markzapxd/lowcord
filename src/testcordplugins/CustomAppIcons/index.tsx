@@ -17,23 +17,40 @@
 */
 
 import { Link } from "@components/Link";
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import { localStorage } from "@utils/localStorage";
 import { closeAllModals, openModal } from "@utils/modal";
 import definePlugin from "@utils/types";
-import { findByProps } from "@webpack";
+import { findByPropsLazy } from "@webpack";
 import { Button, FluxDispatcher, Forms, React, showToast, Toasts } from "@webpack/common";
 
 import AppIconModal from "./AppIconModal";
 
+interface AppIcon {
+    id: string;
+    iconSource: string;
+    name: string;
+    isPremium: boolean;
+}
+
+interface AppIconData {
+    UZ: AppIcon[];
+    QA: Record<string, AppIcon>;
+}
+
+const AppIconData = findByPropsLazy("UZ", "QA") as AppIconData;
+
+const AppIconStore = findByPropsLazy("getCurrentDesktopIcon");
+const EditorFooterClasses = findByPropsLazy("editorFooter");
+
 function removeAppIcon() {
-    const current_icon = findByProps("getCurrentDesktopIcon").getCurrentDesktopIcon();
-    let icons = JSON.parse(localStorage.getItem("vc_app_icons") || "[]");
+    const current_icon = AppIconStore.getCurrentDesktopIcon();
+    let icons = JSON.parse(localStorage.getItem("vc_app_icons") || "[]") as AppIcon[];
     const index = icons.findIndex(icon => current_icon === icon.id);
     if (index !== -1) {
-        icons = icons.filter(e => e.id !== current_icon);
-        delete findByProps("UZ", "QA").QA[current_icon];
-        delete findByProps("UZ", "QA").UZ[findByProps("UZ", "QA").UZ.findIndex((icon => current_icon === icon?.id))];
+        icons = icons.filter(icon => icon.id !== current_icon);
+        delete AppIconData.QA[current_icon];
+        delete AppIconData.UZ[AppIconData.UZ.findIndex(icon => current_icon === icon?.id)];
         localStorage.setItem("vc_app_icons", JSON.stringify(icons));
         showToast("Icon successfully deleted!", Toasts.Type.SUCCESS);
         FluxDispatcher.dispatch({
@@ -46,7 +63,6 @@ function removeAppIcon() {
     }
 
 }
-
 
 export default definePlugin({
     name: "CustomAppIcons",
@@ -67,13 +83,12 @@ export default definePlugin({
         }
     ],
 
-
     start() {
         console.log("Well hello there!, CustomAppIcons has started :)");
         const appIcons = JSON.parse(localStorage.getItem("vc_app_icons") ?? "[]");
         for (const icon of appIcons) {
-            findByProps("UZ", "QA").UZ.push(icon);
-            findByProps("UZ", "QA").QA[icon.id] = icon;
+            AppIconData.UZ.push(icon);
+            AppIconData.QA[icon.id] = icon;
         }
     },
     stop() {
@@ -81,7 +96,7 @@ export default definePlugin({
     },
     addButtons() {
 
-        const { editorFooter } = findByProps("editorFooter");
+        const { editorFooter } = EditorFooterClasses;
         return (
             <>
                 <Button color={Button.Colors.BRAND} size={Button.Sizes.MEDIUM} className={editorFooter} onClick={() => {
@@ -112,8 +127,3 @@ export default definePlugin({
         );
     }
 });
-
-
-
-
-

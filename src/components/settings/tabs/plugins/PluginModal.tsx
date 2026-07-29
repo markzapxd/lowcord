@@ -26,23 +26,23 @@ import { Button } from "@components/Button";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { Flex } from "@components/Flex";
 import { Paragraph } from "@components/Paragraph";
-import { debounce } from "@shared/debounce";
 import { gitRemote } from "@shared/vencordUserAgent";
 import { classNameFactory } from "@utils/css";
+import { buildIssueUrl, generateGitHubIssueBody } from "@utils/debugReport";
 import { proxyLazy } from "@utils/lazy";
 import { Margins } from "@utils/margins";
 import { classes, isObjectEmpty } from "@utils/misc";
 import { OptionType, Plugin, PluginTag } from "@utils/types";
 import { RenderModalProps, User } from "@vencord/discord-types";
 import { findComponentByCodeLazy, findCssClassesLazy } from "@webpack";
-import { Clickable, FluxDispatcher, Modal, openModal, React, Text, Toasts, Tooltip, useEffect, useMemo, UserStore, UserSummaryItem, UserUtils, useState } from "@webpack/common";
+import { Clickable, FluxDispatcher, Modal, openModal, React, Text, Toasts, Tooltip, useEffect, useMemo, UserStore, UserUtils, useState } from "@webpack/common";
 import { Constructor } from "type-fest";
 
 import { PluginMeta } from "~plugins";
 
 import { OptionComponentMap } from "./components";
 import { openContributorModal } from "./ContributorModal";
-import { GithubButton, WebsiteButton } from "./LinkIconButton";
+import { FavoriteButton, GithubButton, WebsiteButton } from "./PluginModalButtons";
 
 const cl = classNameFactory("vc-plugin-modal-");
 
@@ -50,7 +50,7 @@ const AvatarStyles = findCssClassesLazy("moreUsers", "avatar", "clickableAvatar"
 const CloseButton = findComponentByCodeLazy("CLOSE_BUTTON_LABEL");
 const ConfirmModal = findComponentByCodeLazy('parentComponent:"ConfirmModal"');
 const WarningIcon = findComponentByCodeLazy("3.15H3.29c-1.74");
-const UserRecord: Constructor<Partial<User>> = proxyLazy(() => UserStore.getCurrentUser().constructor) as any;
+const UserRecord = proxyLazy(() => UserStore.getCurrentUser().constructor) as Constructor<User, [Partial<User>]>;
 
 interface PluginModalProps extends RenderModalProps {
     plugin: Plugin;
@@ -90,7 +90,7 @@ export default function PluginModal({ plugin, onRestartNeeded, onClose, transiti
 
     // avoid layout shift by showing dummy users while loading users
     const fallbackAuthors = useMemo(() => [makeDummyUser({ username: "Loading...", id: "-1465912127305809920" })], []);
-    const [authors, setAuthors] = useState<Partial<User>[]>([]);
+    const [authors, setAuthors] = useState<User[]>([]);
 
     useEffect(() => {
         let cancelled = false;
@@ -202,40 +202,35 @@ export default function PluginModal({ plugin, onRestartNeeded, onClose, transiti
                 </div>
             )}
             <div className={"vc-settings-modal-content"}>
-                <section>
-                    <Text variant="heading-lg/semibold" className={classes(Margins.top8, Margins.bottom8)}>Authors</Text>
-                    <div style={{ width: "fit-content" }}>
+                <section className={cl("section")}>
+                    <Text variant="heading-lg/semibold" className={Margins.bottom8}>Authors</Text>
+                    <div className={cl("authors")}>
                         <ErrorBoundary noop>
-                            <UserSummaryItem
-                                users={authors.length ? authors : fallbackAuthors}
-                                guildId={undefined}
-                                renderIcon={false}
-                                showDefaultAvatarsForNullUsers
-                                renderMoreUsers={renderMoreUsers}
-                                renderUser={(user: User) => (
-                                    <Clickable
-                                        className={AvatarStyles.clickableAvatar}
-                                        onClick={() => isEquicordPlugin ? openContributorModal(user) : openContributorModal(user)}
-                                    >
-                                        <img
-                                            className={AvatarStyles.avatar}
-                                            src={user.getAvatarURL(void 0, 80, true)}
-                                            alt={user.username}
-                                            title={user.username}
-                                        />
-                                    </Clickable>
-                                )}
-                            />
+                            {(authors.length ? authors : fallbackAuthors).map((user, index) => (
+                                <Clickable
+                                    key={user.id ?? index}
+                                    className={cl("author")}
+                                    onClick={() => openContributorModal(user)}
+                                >
+                                    <img
+                                        className={cl("author-avatar")}
+                                        src={user.getAvatarURL?.(void 0, 80, true)}
+                                        alt={user.username}
+                                    />
+                                    <BaseText size="sm" weight="semibold">{user.username}</BaseText>
+                                </Clickable>
+                            ))}
+                            {plugin.authors.length > 6 && renderMoreUsers("more authors")}
                         </ErrorBoundary>
                     </div>
                 </section>
 
-                <section>
-                    <BaseText size="lg" weight="semibold" color="text-strong" className={classes(Margins.top16, Margins.bottom8)}>Settings</BaseText>
+                <section className={cl("section")}>
+                    <BaseText size="lg" weight="semibold" color="text-strong" className={Margins.bottom8}>Settings</BaseText>
                     {renderSettings()}
                 </section>
             </div>
-            <div>
+            <div className={cl("footer")}>
                 <Flex flexDirection="column" style={{ width: "100%" }}>
                     <Flex style={{ justifyContent: "space-between", alignItems: "center" }}>
                         {hasSettings ? (
@@ -254,18 +249,51 @@ export default function PluginModal({ plugin, onRestartNeeded, onClose, transiti
                                 )}
                             </Tooltip>
                         ) : <div />}
-                        {!pluginMeta.userPlugin && (
-                            <div className={cl("links")}>
-                                <WebsiteButton
-                                    text="Website"
-                                    href={isEquicordPlugin ? `https://equicord.org/plugins/${plugin.name}` : `https://vencord.dev/plugins/${plugin.name}`}
-                                />
-                                <GithubButton
-                                    text="Source Code"
-                                    href={`https://github.com/${gitRemote}/tree/main/${pluginMeta.folderName}`}
-                                />
-                            </div>
-                        )}
+                        <Flex style={{ gap: 8, alignItems: "center" }}>
+                            <Tooltip text="Open a pre-filled GitHub issue for this plugin">
+                                {({ onMouseEnter, onMouseLeave }) => (
+                                    <Button
+                                        size="small"
+                                        variant="secondary"
+                                        onMouseEnter={onMouseEnter}
+                                        onMouseLeave={onMouseLeave}
+                                        onClick={() => {
+                                            try {
+                                                const body = generateGitHubIssueBody({ pluginName: plugin.name });
+                                                const url = buildIssueUrl(`[${plugin.name}] Bug report`, body, ["bug"]);
+                                                VencordNative.native.openExternal(url);
+                                            } catch (e) {
+                                                console.error("Failed to build issue URL", e);
+                                                Toasts.show({
+                                                    id: Toasts.genId(),
+                                                    message: "Failed to build issue URL",
+                                                    type: Toasts.Type.FAILURE,
+                                                    options: { position: Toasts.Position.TOP }
+                                                });
+                                            }
+                                        }}
+                                    >
+                                        Report Issue
+                                    </Button>
+                                )}
+                            </Tooltip>
+                            {!pluginMeta.userPlugin && (
+                                <div className={cl("links")}>
+                                    <FavoriteButton
+                                        isFavorite={pluginSettings.isFavorite ?? false}
+                                        onClick={() => pluginSettings.isFavorite = !pluginSettings.isFavorite}
+                                    />
+                                    <WebsiteButton
+                                        text="Website"
+                                        href={isEquicordPlugin ? `https://equicord.org/plugins/${plugin.name}` : `https://vencord.dev/plugins/${plugin.name}`}
+                                    />
+                                    <GithubButton
+                                        text="Source Code"
+                                        href={`https://github.com/${gitRemote}/tree/main/${pluginMeta.folderName}`}
+                                    />
+                                </div>
+                            )}
+                        </Flex>
                     </Flex>
                 </Flex>
             </div>

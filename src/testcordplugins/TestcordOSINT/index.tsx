@@ -7,17 +7,18 @@
 import "./style.css";
 
 import { ApplicationCommandInputType, findOption, sendBotMessage } from "@api/Commands";
+import { HeaderBarButton } from "@api/HeaderBar";
 import { DataStore } from "@api/index";
 import { definePluginSettings } from "@api/Settings";
-import { HeaderBarButton } from "@api/HeaderBar";
 import { Logger } from "@utils/Logger";
+import { sleep } from "@utils/misc";
 import { ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalRoot, openModal } from "@utils/modal";
 import definePlugin, { OptionType } from "@utils/types";
 import { Message } from "@vencord/discord-types";
-import { Button, ChannelStore, Constants, GuildMemberStore, GuildStore, IconUtils, Menu, PermissionsBits, PermissionStore, Popout, React, RestAPI, SelectedChannelStore, UserStore, useState, useRef, useEffect, useCallback } from "@webpack/common";
+import { Button, ChannelStore, Constants, GuildMemberStore, GuildStore, IconUtils, Menu, PermissionsBits, PermissionStore, Popout, React, RelationshipStore, RestAPI, SelectedChannelStore, TextInput, useCallback, useEffect, useMemo, useRef, UserStore, useState } from "@webpack/common";
 
-import { AlgorithmResult, analyzeMessages, MessageData } from "./algorithms";
 import { callAI, CordCatResult, fetchCordCatData } from "./aiManager";
+import { AlgorithmResult, analyzeMessages, MessageData } from "./algorithms";
 
 const logger = new Logger("TestcordOSINT");
 
@@ -160,7 +161,7 @@ function getDMChannelsWithUser(userId: string): string[] {
 
     for (const [id, channel] of Object.entries(privateChannels)) {
         if (channel.type !== 1) continue;
-        const recipients = (channel as any).recipients;
+        const { recipients } = (channel as any);
         if (Array.isArray(recipients) && recipients.includes(userId)) {
             dmChannelIds.push(id);
         }
@@ -228,7 +229,9 @@ async function searchMessages(
     };
 
     const channel = ChannelStore.getChannel(channelId);
-    if (channel?.guild_id && guildId) {
+    const channelBelongsToGuild = channel?.guild_id && channel.guild_id === guildId;
+
+    if (channelBelongsToGuild) {
         query.channel_id = channelId;
     }
 
@@ -492,7 +495,7 @@ function AttachmentsModal({ modalProps, messages }: { modalProps: any; messages:
 function OSINTScanPanel({ userId, channelId, modalProps }: { userId: string; channelId: string; modalProps: any; }) {
     const unlimited = settings.store.unlimitedMessages;
     const scanMutual = settings.store.scanMutualServers;
-    const scanDMs = settings.store.scanDMs;
+    const { scanDMs } = settings.store;
     const limit = settings.store.messageLimit;
 
     const [phase, setPhase] = useState<"fetching" | "analyzing" | "done" | "error">("fetching");
@@ -509,6 +512,7 @@ function OSINTScanPanel({ userId, channelId, modalProps }: { userId: string; cha
 
     const fetchStateRef = useRef<FetchState>({ running: false, aborted: false, total: 0 } as FetchState);
     const messagesRef = useRef<MessageData[]>([]);
+    const lastMessagesUpdateRef = useRef(0);
 
     const user = UserStore.getUser(userId);
 
@@ -538,15 +542,19 @@ function OSINTScanPanel({ userId, channelId, modalProps }: { userId: string; cha
                     if (cancelled || messages.length === 0) break;
                     acc.push(...messages.map(toMessageData));
                     state.total = acc.length;
-                    setAllMessages([...acc]);
+                    const now = Date.now();
+                    if (!unlimited || now - lastMessagesUpdateRef.current > 500) {
+                        lastMessagesUpdateRef.current = now;
+                        setAllMessages([...acc]);
+                    }
                     offset += messages.length;
                     if (!unlimited && acc.length >= limit) break;
                     if (offset >= total) break;
-                    await new Promise(r => setTimeout(r, 250));
+                    await sleep(250);
                 } catch (e: any) {
                     if (cancelled) break;
                     if (!unlimited) throw e;
-                    await new Promise(r => setTimeout(r, 1000));
+                    await sleep(1000);
                 }
             }
         }
@@ -584,7 +592,7 @@ function OSINTScanPanel({ userId, channelId, modalProps }: { userId: string; cha
                     if (cancelled || !state.running) break;
                     const dmChannel = ChannelStore.getChannel(dmId);
                     setCurrentGuildName(`DM: ${dmChannel?.name || dmId}`);
-                    setProgress(`Searching DMs...`);
+                    setProgress("Searching DMs...");
                     try {
                         await searchGuild(null, "DM", dmId);
                     } catch {}
@@ -593,6 +601,7 @@ function OSINTScanPanel({ userId, channelId, modalProps }: { userId: string; cha
             }
 
             if (!cancelled) {
+                setAllMessages([...acc]);
                 runAnalysis([...acc]);
                 setPhase("analyzing");
                 if (settings.store.useAI && acc.length > 0) {
@@ -903,7 +912,7 @@ function OSINTMultiScan({ modalProps }: { modalProps: any; }) {
         const guildId = chan?.guild_id;
         const unlimited = settings.store.unlimitedMessages;
         const limit = settings.store.messageLimit;
-        const scanDMs = settings.store.scanDMs;
+        const { scanDMs } = settings.store;
 
         for (let i = 0; i < targets.length; i++) {
             if (abortRef.current) break;
@@ -913,7 +922,7 @@ function OSINTMultiScan({ modalProps }: { modalProps: any; }) {
             try {
                 const acc: MessageData[] = [];
                 let offset = 0;
-                let running = true;
+                const running = true;
 
                 if (guildId) {
                     while (running) {
@@ -923,7 +932,7 @@ function OSINTMultiScan({ modalProps }: { modalProps: any; }) {
                         offset += messages.length;
                         if (!unlimited && acc.length >= limit) break;
                         if (offset >= total) break;
-                        await new Promise(r => setTimeout(r, 250));
+                        await sleep(250);
                     }
                 }
 
@@ -939,7 +948,7 @@ function OSINTMultiScan({ modalProps }: { modalProps: any; }) {
                             dmOffset += messages.length;
                             if (!unlimited && acc.length >= limit) break;
                             if (dmOffset >= total) break;
-                            await new Promise(r => setTimeout(r, 250));
+                            await sleep(250);
                         }
                     }
                 }
@@ -1053,10 +1062,94 @@ function OSINTMultiScan({ modalProps }: { modalProps: any; }) {
     );
 }
 
+// ── User Picker Modal ──
+
+function UserPickerModal({ modalProps, onSelect }: { modalProps: any; onSelect: (userId: string) => void; }) {
+    const [query, setQuery] = useState("");
+    const [suggestions, setSuggestions] = useState<Array<{ id: string; username: string; globalName?: string; avatar?: string; }>>([]);
+
+    useEffect(() => {
+        const users: Array<{ id: string; username: string; globalName?: string; avatar?: string; }> = [];
+        const seen = new Set<string>();
+        const friendIds: string[] = RelationshipStore.getFriendIDs?.() ?? [];
+        for (const id of friendIds.slice(0, 100)) {
+            const user = UserStore.getUser(id);
+            if (user && !seen.has(id)) { seen.add(id); users.push({ id, username: user.username, globalName: (user as any).globalName, avatar: user.avatar }); }
+        }
+        for (const guild of Object.values(GuildStore.getGuilds())) {
+            for (const member of GuildMemberStore.getMembers(guild.id).slice(0, 50)) {
+                if (seen.has(member.userId)) continue;
+                const user = UserStore.getUser(member.userId);
+                if (user) { seen.add(member.userId); users.push({ id: member.userId, username: user.username, globalName: (user as any).globalName, avatar: user.avatar }); }
+            }
+            if (users.length > 300) break;
+        }
+        setSuggestions(users);
+    }, []);
+
+    const filtered = useMemo(() => {
+        if (!query.trim()) return suggestions.slice(0, 20);
+        const q = query.toLowerCase();
+        return suggestions.filter(u => u.username.toLowerCase().includes(q) || u.globalName?.toLowerCase().includes(q) || u.id === query.trim()).slice(0, 20);
+    }, [query, suggestions]);
+
+    function select(userId: string) { modalProps.onClose(); onSelect(userId); }
+
+    return (
+        <ModalRoot {...modalProps} size="small" className="vc-osint-root">
+            <ModalHeader>
+                <div className="vc-osint-header-left">
+                    <div className="vc-osint-header-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" /></svg>
+                    </div>
+                    <div>
+                        <div className="vc-osint-header-title">Select User</div>
+                        <div className="vc-osint-header-subtitle">Search by name or paste a user ID</div>
+                    </div>
+                </div>
+                <ModalCloseButton onClick={modalProps.onClose} />
+            </ModalHeader>
+            <ModalContent>
+                <div className="vc-osint-body">
+                    <TextInput
+                        autoFocus
+                        placeholder="Username, display name, or user ID..."
+                        value={query}
+                        onChange={setQuery}
+                        onKeyDown={(e: any) => {
+                            if (e.key === "Enter") {
+                                const m = query.trim().match(/^<?@?!?(\d{17,20})>?$/);
+                                if (m) { select(m[1]); return; }
+                                if (filtered.length > 0) select(filtered[0].id);
+                            }
+                        }}
+                    />
+                    <div className="vc-osint-picker-list">
+                        {filtered.map(user => (
+                            <div key={user.id} className="vc-osint-picker-item" onClick={() => select(user.id)}>
+                                <img className="vc-osint-picker-avatar" src={user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.webp?size=32` : `https://cdn.discordapp.com/embed/avatars/${(BigInt(user.id) >> 22n) % 6n}.png`} alt="" />
+                                <div className="vc-osint-picker-info">
+                                    <span className="vc-osint-picker-name">{user.globalName || user.username}</span>
+                                    <span className="vc-osint-picker-tag">@{user.username}</span>
+                                </div>
+                            </div>
+                        ))}
+                        {filtered.length === 0 && query.trim() && <div className="vc-osint-empty"><p>No users found. Paste a user ID and press Enter.</p></div>}
+                    </div>
+                </div>
+            </ModalContent>
+        </ModalRoot>
+    );
+}
+
 // ── Open helpers ──
 
 function openScan(userId: string, channelId: string) {
     openModal(props => <OSINTScanPanel userId={userId} channelId={channelId} modalProps={props} />);
+}
+
+function openUserPicker(channelId: string) {
+    openModal(props => <UserPickerModal modalProps={props} onSelect={userId => openScan(userId, channelId)} />);
 }
 
 function openMultiScan() {
@@ -1064,7 +1157,7 @@ function openMultiScan() {
 }
 
 function openHistory() {
-    openModal(props => <OSINTHistoryPanel modalProps={props} onSelect={(userId) => {
+    openModal(props => <OSINTHistoryPanel modalProps={props} onSelect={userId => {
         const channelId = SelectedChannelStore.getChannelId();
         openScan(userId, channelId);
     }} />);
@@ -1086,7 +1179,7 @@ function OSINTButton() {
                 <Menu.MenuItem
                     id="vc-osint-scan-user"
                     label="Scan User"
-                    action={() => { onClose(); const ch = SelectedChannelStore.getChannelId(); openModal(props => <OSINTScanPanel userId="" channelId={ch} modalProps={props} />); }}
+                    action={() => { onClose(); openUserPicker(SelectedChannelStore.getChannelId()); }}
                 />
                 <Menu.MenuItem
                     id="vc-osint-multi"
@@ -1109,26 +1202,27 @@ function OSINTButton() {
     }
 
     return (
-        <Popout
-            position="bottom"
-            align="center"
-            spacing={0}
-            animation={Popout.Animation.NONE}
-            shouldShow={show}
-            onRequestClose={() => setShow(false)}
-            targetElementRef={buttonRef}
-            renderPopout={() => renderPopout(() => setShow(false))}
-        >
-            {(_, { isShown }) => (
-                <HeaderBarButton
-                    ref={buttonRef}
-                    icon={SearchIcon}
-                    tooltip={isShown ? null : "OSINT Tools"}
-                    selected={isShown}
-                    onClick={() => setShow(v => !v)}
-                />
-            )}
-        </Popout>
+        <span ref={buttonRef} style={{ display: "inline-flex", alignItems: "center" }}>
+            <Popout
+                position="bottom"
+                align="center"
+                spacing={0}
+                animation={Popout.Animation.NONE}
+                shouldShow={show}
+                onRequestClose={() => setShow(false)}
+                targetElementRef={buttonRef}
+                renderPopout={() => renderPopout(() => setShow(false))}
+            >
+                {(_, { isShown }) => (
+                    <HeaderBarButton
+                        icon={SearchIcon}
+                        tooltip={isShown ? null : "OSINT Tools"}
+                        selected={isShown}
+                        onClick={() => setShow(v => !v)}
+                    />
+                )}
+            </Popout>
+        </span>
     );
 }
 
@@ -1196,8 +1290,7 @@ export default definePlugin({
 
     toolboxActions: {
         "OSINT Scan"() {
-            const channelId = SelectedChannelStore.getChannelId();
-            openModal(props => <OSINTScanPanel userId="" channelId={channelId} modalProps={props} />);
+            openUserPicker(SelectedChannelStore.getChannelId());
         },
         "Multi-Target Scan"() { openMultiScan(); },
         "Scan History"() { openHistory(); },

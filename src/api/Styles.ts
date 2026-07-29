@@ -18,7 +18,7 @@
 
 import { generateTextCss } from "@components/BaseText";
 import { generateMarginCss } from "@components/margins";
-import { classNameFactory as _classNameFactory, classNameToSelector, createAndAppendStyle } from "@utils/css";
+import { classNameFactory as _classNameFactory, classNameToSelector } from "@utils/css";
 
 // Backwards compat for Vesktop
 /** @deprecated Import this from `@utils/css` instead */

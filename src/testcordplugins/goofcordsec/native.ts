@@ -2,14 +2,12 @@
  * Vencord, a Discord client mod
  * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
- *
- * GoofcordSecurity — main-process implementation.
- * Adapted from GoofCord (https://github.com/Milkshiift/GoofCord).
  */
+
+import { release } from "node:os";
 
 import { RendererSettings } from "@main/settings";
 import { app, BrowserWindow, session } from "electron";
-import { release } from "node:os";
 
 // ─────────────────────────────────────────────────────────────────── helpers
 
@@ -163,10 +161,10 @@ function generateUserAgentString(platform: "win32" | "darwin" | "linux", majorVe
     const engine = "AppleWebKit/537.36 (KHTML, like Gecko)";
     const browser = `Chrome/${majorVersion}.0.0.0 Safari/537.36`;
     switch (platform) {
-        case "win32":  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${engine} ${browser}`;
+        case "win32": return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${engine} ${browser}`;
         case "darwin": return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${engine} ${browser}`;
-        case "linux":  return `Mozilla/5.0 (X11; Linux x86_64) ${engine} ${browser}`;
-        default:       return `Mozilla/5.0 (X11; ${platform} x86_64) ${engine} ${browser}`;
+        case "linux": return `Mozilla/5.0 (X11; Linux x86_64) ${engine} ${browser}`;
+        default: return `Mozilla/5.0 (X11; ${platform} x86_64) ${engine} ${browser}`;
     }
 }
 
@@ -183,7 +181,8 @@ function generateClientHints(platform: "win32" | "darwin" | "linux", arch: strin
         { brand: "Not_A Brand", version: "99.0.0.0" },
     ];
 
-    let pPlatform = "Unknown", pVersion = osVersion, pArch = "x86", pBitness = "64";
+    let pPlatform = "Unknown", pVersion = osVersion, pArch = "x86";
+    const pBitness = "64";
     if (platform === "win32") { pPlatform = "Windows"; pVersion = "10.0.0"; }
     else if (platform === "darwin") { pPlatform = "macOS"; pArch = arch === "arm64" ? "arm" : "x86"; }
     else if (platform === "linux") { pPlatform = "Linux"; pVersion = ""; }

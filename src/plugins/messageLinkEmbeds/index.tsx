@@ -16,16 +16,13 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-import "./styles.css";
-
+import { TestcordRequestCoordinator } from "@api/index";
 import { addMessageAccessory, removeMessageAccessory } from "@api/MessageAccessories";
 import { updateMessage } from "@api/MessageUpdater";
 import { definePluginSettings } from "@api/Settings";
 import { getUserSettingLazy } from "@api/UserSettings";
 import { BaseText } from "@components/BaseText";
 import { Devs } from "@utils/constants.js";
-import { classNameFactory } from "@utils/css";
-import { classes } from "@utils/misc";
 import { Queue } from "@utils/Queue";
 import definePlugin, { OptionType } from "@utils/types";
 import { Channel, Message } from "@vencord/discord-types";
@@ -33,19 +30,16 @@ import { findComponentByCodeLazy, findComponentLazy, findCssClassesLazy } from "
 import {
     Button,
     ChannelStore,
-    Constants,
     GuildStore,
     IconUtils,
     MessageStore,
     Parser,
     PermissionsBits,
     PermissionStore,
-    RestAPI,
     UserStore
 } from "@webpack/common";
 import { ComponentType, JSX } from "react";
 
-const cl = classNameFactory("vc-message-link-embeds-");
 const messageCache = new Map<string, {
     message?: Message;
     fetched: boolean;
@@ -138,16 +132,7 @@ async function fetchMessage(channelID: string, messageID: string) {
 
     messageCache.set(messageID, { fetched: false });
 
-    const res = await RestAPI.get({
-        url: Constants.Endpoints.MESSAGES(channelID),
-        query: {
-            limit: 1,
-            around: messageID
-        },
-        retries: 2
-    }).catch(() => null);
-
-    const msg = res?.body?.[0];
+    const msg = await TestcordRequestCoordinator.fetchMessageAround(channelID, messageID).catch(() => null);
     if (!msg) return;
 
     const message: Message = MessageStore.getMessages(msg.channel_id).receiveMessage(msg).get(msg.id);
@@ -306,7 +291,12 @@ function ChannelMessageEmbedAccessory({ message, channel }: MessageEmbedProps): 
                 }
             }}
             renderDescription={() => (
-                <div key={message.id} className={classes(cl("message"), settings.store.messageBackgroundColor && cl("search-result"))}>
+                <div key={message.id} style={!settings.store.messageBackgroundColor ? undefined : {
+                    backgroundColor: "var(--background-base-lower)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "8px",
+                    paddingBottom: "8px",
+                }}>
                     <ChannelMessage
                         id={`message-link-embeds-${message.id}`}
                         message={message}

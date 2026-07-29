@@ -4,11 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import {addChatBarButton, ChatBarButton, ChatBarButtonFactory, removeChatBarButton} from "@api/ChatButtons";
+import { ChatBarButton, ChatBarButtonFactory, removeChatBarButton } from "@api/ChatButtons";
 import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { addChannelToolbarButton, addHeaderBarButton, ChannelToolbarButton, HeaderBarButton, removeChannelToolbarButton, removeHeaderBarButton } from "@api/HeaderBar";
 import { definePluginSettings } from "@api/Settings";
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { Menu, React } from "@webpack/common";
 
@@ -49,8 +49,12 @@ const ComposeModeIcon = ({ width = 24, height = 24 }: { width?: number; height?:
     </svg>
 );
 
+const COMPOSE_CTX_KEYS = ["isEnabled", "contextMenu"] as const;
+const COMPOSE_BUTTON_KEYS = ["isEnabled", "showIcon"] as const;
+
 const ContextMenuPatch: NavContextMenuPatchCallback = (children, props: any) => {
-    const { isEnabled, contextMenu } = settings.use(["isEnabled", "contextMenu"]);
+    const isEnabled = settings.store.isEnabled;
+    const contextMenu = settings.store.contextMenu;
     const container = findGroupChildrenByChildId("submit-button", children);
     if (container && contextMenu) {
         const idx = container.findIndex(c => c?.props?.id === "submit-button");
@@ -66,7 +70,7 @@ const ContextMenuPatch: NavContextMenuPatchCallback = (children, props: any) => 
 };
 
 const ComposeModeToggleButton: ChatBarButtonFactory = ({ isMainChat }) => {
-    const { isEnabled, showIcon } = settings.use(["isEnabled", "showIcon"]);
+    const { isEnabled, showIcon } = settings.use(COMPOSE_BUTTON_KEYS);
 
     if (!isMainChat || !showIcon || settings.store.location !== "chatbar") return null;
 
@@ -88,18 +92,10 @@ export default definePlugin({
     authors: [TestcordDevs.x2b],
     description: "Toggle writing multi-line messages by default",
     tags: ["Chat", "Utility"],
-    dependencies: ["CommandsAPI", "ChatInputButtonAPI"],
+    dependencies: ["CommandsAPI", "ChatInputButtonAPI", "HeaderBarAPI"],
     settings,
 
-    patches: [
-        {
-            find: ".NO_SEND_MESSAGES_PERMISSION_PLACEHOLDER:",
-            replacement: {
-                match: /(disableEnterToSubmit:)([^,]{0,100},)/g,
-                replace: "$1$self.settings.store.isEnabled||$2"
-            }
-        },
-    ],
+    patches: [],
 
     contextMenus: {
         "textarea-context": ContextMenuPatch
@@ -137,8 +133,3 @@ export default definePlugin({
         removeChannelToolbarButton("ComposeMode");
     },
 });
-
-
-
-
-

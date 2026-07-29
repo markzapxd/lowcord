@@ -166,6 +166,7 @@ function findContextCorrections(text: string, vocab: Set<string>): Map<string, s
             if (known.length < 2 || lowerWord.length < 2) continue;
 
             const maxDist = Math.max(1, Math.floor(Math.min(known.length, lowerWord.length) / 3));
+            if (Math.abs(known.length - lowerWord.length) > maxDist) continue;
 
             const dist = levenshteinDistance(lowerWord, known);
 
@@ -185,12 +186,21 @@ function findContextCorrections(text: string, vocab: Set<string>): Map<string, s
     return corrections;
 }
 
+const correctionRegexCache = new Map<string, RegExp>();
+function getCorrectionRegex(word: string): RegExp {
+    let rx = correctionRegexCache.get(word);
+    if (!rx) {
+        rx = new RegExp(`\\b${word}\\b`, "gi");
+        correctionRegexCache.set(word, rx);
+    }
+    return rx;
+}
+
 function applyContextCorrections(text: string, corrections: Map<string, string>): string {
     let result = text;
 
     for (const [misspelled, correct] of corrections) {
-        const regex = new RegExp(`\\b${misspelled}\\b`, "gi");
-        result = result.replace(regex, match => {
+        result = result.replace(getCorrectionRegex(misspelled), match => {
             if (match[0] === match[0].toUpperCase()) {
                 return correct.charAt(0).toUpperCase() + correct.slice(1);
             }
@@ -789,7 +799,7 @@ const COMMON_MISSPELLINGS: [RegExp, string | ((match: string) => string)][] = [
     [/\bgonnashe\b/gi, "gonna she"],
     [/\bgonnahe\b/gi, "gonna he"],
     [/\bgonnait\b/gi, "gonna it"],
-    [/\bgonna[a-z]/gi, m => "gonna " + m[6]],
+    [/\bgonna([a-z])/gi, m => "gonna " + m.slice(5)],
     [/\bwannai\b/gi, "wanna I"],
     [/\bwannayou\b/gi, "wanna you"],
     [/\bwannawe\b/gi, "wanna we"],
@@ -797,8 +807,8 @@ const COMMON_MISSPELLINGS: [RegExp, string | ((match: string) => string)][] = [
     [/\bwannashe\b/gi, "wanna she"],
     [/\bwannahe\b/gi, "wanna he"],
     [/\bwannait\b/gi, "wanna it"],
-    [/\bwanna[a-z]/gi, m => "wanna " + m[6]],
-    [/\bgotta[a-z]/gi, m => "gotta " + m[6]],
+    [/\bwanna([a-z])/gi, m => "wanna " + m.slice(5)],
+    [/\bgotta([a-z])/gi, m => "gotta " + m.slice(5)],
     [/\bkindai\b/gi, "kinda i"],
     [/\bkindaa\b/gi, "kinda a"],
     [/\bsortai\b/gi, "sorta i"],

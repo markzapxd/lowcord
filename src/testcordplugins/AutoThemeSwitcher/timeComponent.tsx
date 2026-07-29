@@ -7,7 +7,7 @@
 import { Settings } from "@api/Settings";
 import { resolveError, SettingsSection } from "@components/settings/tabs/plugins/components/Common";
 import { TextSetting } from "@components/settings/tabs/plugins/components/TextSetting";
-import { PluginSettingComponentProps, OptionType } from "@utils/types";
+import { OptionType,PluginSettingComponentProps } from "@utils/types";
 import { React } from "@webpack/common";
 
 /**
@@ -51,7 +51,7 @@ export function timeComponent({ setValue }: PluginSettingComponentProps, id: str
         return null;
 
     return (
-        <SettingsSection error={error} name={""} description={""}>
+        <SettingsSection id={id} error={error} name={""} description={""}>
         <TextSetting
             setting={{
                 type: OptionType.STRING,

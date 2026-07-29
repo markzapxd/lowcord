@@ -23,6 +23,16 @@ interface FetchTiming {
 let currentFetch: FetchTiming | null = null;
 let currentChannelId: string | null = null;
 const channelTimings: Map<string, { time: number; timestamp: Date; }> = new Map();
+const MAX_CHANNEL_TIMINGS = 100;
+const FETCH_BUTTON_KEYS = ["showMs", "iconColor", "showIcon", "location"] as const;
+
+function trimChannelTimings() {
+    while (channelTimings.size > MAX_CHANNEL_TIMINGS) {
+        const key = channelTimings.keys().next().value;
+        if (key === undefined) break;
+        channelTimings.delete(key);
+    }
+}
 
 const settings = definePluginSettings({
     location: {
@@ -53,10 +63,55 @@ const settings = definePluginSettings({
     }
 });
 
-const FetchTimeButton: ChatBarButtonFactory = ({ isMainChat }) => {
-    const { showMs, iconColor } = settings.use(["showMs", "iconColor"]);
+function FetchIcon() {
+    return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z" />
+        </svg>
+    );
+}
 
-    if (!isMainChat || !settings.store.showIcon || !currentChannelId || settings.store.location !== "chatbar") {
+function getFetchTooltip() {
+    if (!currentChannelId) return "No channel selected.";
+
+    const channelData = channelTimings.get(currentChannelId);
+    if (!channelData) return "No fetch timing yet.";
+
+    return `Messages loaded in ${Math.round(channelData.time)}ms (${formatTimeAgo(channelData.timestamp)})`;
+}
+
+const timingListeners = new Set<() => void>();
+
+function notifyTimingListeners() {
+    timingListeners.forEach(listener => listener());
+}
+
+function useTimingUpdates() {
+    const [, forceUpdate] = React.useState(0);
+
+    React.useEffect(() => {
+        const listener = () => forceUpdate(n => n + 1);
+        timingListeners.add(listener);
+        return () => { timingListeners.delete(listener); };
+    }, []);
+}
+
+function HeaderFetchTimeButton() {
+    useTimingUpdates();
+
+    return <HeaderBarButton icon={FetchIcon} tooltip={getFetchTooltip()} />;
+}
+
+function ChannelFetchTimeButton() {
+    useTimingUpdates();
+
+    return <ChannelToolbarButton icon={FetchIcon} tooltip={getFetchTooltip()} />;
+}
+
+const FetchTimeButton: ChatBarButtonFactory = ({ isMainChat }) => {
+    const { showMs, iconColor, showIcon, location } = settings.use(FETCH_BUTTON_KEYS);
+
+    if (!isMainChat || !showIcon || !currentChannelId || location !== "chatbar") {
         return null;
     }
 
@@ -130,6 +185,7 @@ function handleChannelSelect(data: any) {
             channelId: data.channelId,
             startTime: performance.now()
         };
+        notifyTimingListeners();
     }
 }
 
@@ -146,16 +202,18 @@ function handleMessageLoad(data: any) {
         time: duration,
         timestamp: new Date()
     });
+    trimChannelTimings();
 
     currentFetch = null;
+    notifyTimingListeners();
 }
-
 
 export default definePlugin({
     name: "MessageFetchTimer",
     description: "Shows how long it took to fetch messages for the current channel",
     tags: ["Chat", "Utility"],
     authors: [TestcordDevs.x2b],
+    dependencies: ["HeaderBarAPI"],
     settings,
 
     start() {
@@ -170,29 +228,9 @@ export default definePlugin({
 
         const { location } = settings.store;
         if (location === "headerbar") {
-            addHeaderBarButton("MessageFetchTimer", () => (
-                <HeaderBarButton
-                    icon={() => (
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z" />
-                        </svg>
-                    )}
-                    tooltip="Message Fetch Timer"
-                    onClick={() => {}}
-                />
-            ), 5);
+            addHeaderBarButton("MessageFetchTimer", HeaderFetchTimeButton, 5);
         } else if (location === "channeltoolbar") {
-            addChannelToolbarButton("MessageFetchTimer", () => (
-                <ChannelToolbarButton
-                    icon={() => (
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z" />
-                        </svg>
-                    )}
-                    tooltip="Message Fetch Timer"
-                    onClick={() => {}}
-                />
-            ), 5);
+            addChannelToolbarButton("MessageFetchTimer", ChannelFetchTimeButton, 5);
         }
     },
 
@@ -204,21 +242,13 @@ export default definePlugin({
         currentFetch = null;
         channelTimings.clear();
         currentChannelId = null;
+        notifyTimingListeners();
         removeHeaderBarButton("MessageFetchTimer");
         removeChannelToolbarButton("MessageFetchTimer");
     },
 
     chatBarButton: {
-        icon: (() => (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z" />
-            </svg>
-        )) as any,
+        icon: FetchIcon as any,
         render: FetchTimeButton,
     },
 });
-
-
-
-
-

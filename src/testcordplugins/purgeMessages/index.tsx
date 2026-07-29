@@ -17,7 +17,8 @@
 */
 
 import { ApplicationCommandInputType, ApplicationCommandOptionType, findOption, sendBotMessage } from "@api/Commands";
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
+import { sleep } from "@utils/misc";
 import definePlugin from "@utils/types";
 import { Channel, Message } from "@vencord/discord-types";
 import { Forms, MessageActions, MessageStore, UserStore } from "@webpack/common";
@@ -58,7 +59,7 @@ async function deleteMessages(amount: number, channel: Channel, delay: number = 
             MessageActions.deleteMessage(channelId, message.id);
             deleted++;
             if (deleted >= amount) break;
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await sleep(delay);
         } catch (error) {
             console.error("[PurgeMessages] Failed to delete message:", message.id, error);
         }
@@ -107,7 +108,7 @@ export default definePlugin({
                 const amount: number = findOption(opts, "amount", 0);
                 if (!amount || amount <= 0) {
                     sendBotMessage(ctx.channel.id, {
-                        content: `> Invalid amount specified.`
+                        content: "> Invalid amount specified."
                     });
                     return;
                 }
@@ -127,15 +128,10 @@ export default definePlugin({
                 } catch (error) {
                     console.error("[PurgeMessages] Error:", error);
                     sendBotMessage(ctx.channel.id, {
-                        content: `> Error: Failed to delete messages`
+                        content: "> Error: Failed to delete messages"
                     });
                 }
             },
         }
     ],
 });
-
-
-
-
-

@@ -5,8 +5,9 @@
  */
 
 import { showNotice } from "@api/Notices";
+import { PluginHealth } from "@api/PluginHealth";
 import { hasAnyVisibleSettings, isPluginEnabled, pluginRequiresRestart, startDependenciesRecursive, startPlugin, stopPlugin } from "@api/PluginManager";
-import { Settings } from "@api/Settings";
+import { Settings, useSettings } from "@api/Settings";
 import { CogWheel, InfoIcon } from "@components/Icons";
 import { AddonCard } from "@components/settings/AddonCard";
 import { classNameFactory } from "@utils/css";
@@ -20,6 +21,9 @@ import { openPluginModal } from "./PluginModal";
 
 const logger = new Logger("PluginCard");
 const cl = classNameFactory("vc-plugins-");
+
+// Hoisted so each card passes the same array instance across renders.
+const PLUGIN_ENABLED_PATHS: Record<string, readonly `plugins.${string}.enabled`[]> = {};
 interface PluginCardProps extends React.HTMLProps<HTMLDivElement> {
     plugin: Plugin;
     disabled?: boolean;
@@ -30,6 +34,11 @@ interface PluginCardProps extends React.HTMLProps<HTMLDivElement> {
 }
 
 export function PluginCard({ plugin, disabled, onRestartNeeded, onMouseEnter, onMouseLeave, isNew }: PluginCardProps) {
+    // Subscribe to this plugin's own enabled flag. The card reads it through the
+    // non-reactive isPluginEnabled, and the parent memoises the card elements against
+    // `settings.plugins`, so nothing here re-renders on its own when the value changes.
+    useSettings(PLUGIN_ENABLED_PATHS[plugin.name] ??= [`plugins.${plugin.name}.enabled`]);
+
     const settings = Settings.plugins[plugin.name];
     const pluginMeta = PluginMeta[plugin.name] || { folderName: "", userPlugin: false };
     const isEquicordPlugin = pluginMeta.folderName?.startsWith("src/equicordplugins/") ?? false;
@@ -38,6 +47,20 @@ export function PluginCard({ plugin, disabled, onRestartNeeded, onMouseEnter, on
     const isUserPlugin = pluginMeta?.userPlugin ?? false;
     const isModifiedPlugin = plugin.isModified ?? false;
     const isBDPlugin = pluginMeta.folderName?.startsWith("src/Betterdiscordplugins/") || plugin.tags?.includes("betterdiscord");
+
+    // Re-render when the stability score for *this* plugin changes (e.g. when
+    // history finishes loading from IndexedDB after the Plugins tab opens).
+    const [stabilityTick, setStabilityTick] = React.useState(0);
+    React.useEffect(() => {
+        let lastBadge = PluginHealth.getStability(plugin.name).badge;
+        return PluginHealth.subscribe(() => {
+            const next = PluginHealth.getStability(plugin.name).badge;
+            if (next !== lastBadge) {
+                lastBadge = next;
+                setStabilityTick(t => t + 1);
+            }
+        });
+    }, [plugin.name]);
 
     const isEnabled = () => isPluginEnabled(plugin.name);
 
@@ -144,20 +167,53 @@ export function PluginCard({ plugin, disabled, onRestartNeeded, onMouseEnter, on
 
     const pluginDetails = pluginInfo.find(p => p.condition);
 
-    const sourceBadge = pluginDetails ? (
-        <img
-            src={pluginDetails.src}
-            alt={pluginDetails.alt}
-            className={cl("source")}
-        />
-    ) : null;
-
     const tooltip = pluginDetails?.title || "Unknown Plugin";
+    // stabilityTick is referenced so the card re-renders when the badge
+    // transitions (e.g. from "unknown" to "stable" after history loads).
+    const stability = React.useMemo(
+        () => PluginHealth.getStability(plugin.name),
+        [plugin.name, stabilityTick]
+    );
+    const showStabilityBadge = stability.badge === "flaky" || stability.badge === "unstable";
+    const stabilityTooltip = showStabilityBadge
+        ? `Broken in ${stability.sessionsBroken} of the last ${stability.sessionsSeen} sessions (${Math.round(stability.ratio * 100)}%).`
+        : undefined;
+
+    const footer = (
+        <div className={cl("card-meta")}>
+            <span className={cl("card-source")}>
+                {pluginDetails && (
+                    <img
+                        src={pluginDetails.src}
+                        alt={pluginDetails.alt}
+                        className={cl("source")}
+                    />
+                )}
+                {tooltip}
+            </span>
+            {showStabilityBadge && (
+                <span
+                    className={cl("card-stability")}
+                    data-badge={stability.badge}
+                    title={stabilityTooltip}
+                >
+                    {stability.badge === "unstable" ? "Unstable" : "Flaky"}
+                </span>
+            )}
+            {!!plugin.tags?.length && (
+                <div className={cl("card-tags")}>
+                    {plugin.tags.slice(0, 2).map(tag => (
+                        <span key={tag} className={cl("card-tag")}>{tag}</span>
+                    ))}
+                    {plugin.tags.length > 2 && <span className={cl("card-tag")}>+{plugin.tags.length - 2}</span>}
+                </div>
+            )}
+        </div>
+    );
 
     return (
         <AddonCard
             name={plugin.name}
-            sourceBadge={sourceBadge}
             tooltip={tooltip}
             description={plugin.description}
             isNew={isNew}
@@ -177,6 +233,8 @@ export function PluginCard({ plugin, disabled, onRestartNeeded, onMouseEnter, on
                         : <InfoIcon className={cl("info-icon")} />
                     }
                 </button>
-            } />
+            }
+            footer={footer}
+        />
     );
 }

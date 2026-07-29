@@ -23,8 +23,10 @@ import type * as TSPattern from "ts-pattern";
 export let FluxDispatcher: t.FluxDispatcher;
 waitFor(["dispatch", "subscribe"], m => {
     FluxDispatcher = m;
-    // Non import access to avoid circular dependency
-    Vencord.Plugins.subscribeAllPluginsFluxEvents(m);
+    // Non import access to avoid circular dependency.
+    // Deferred because the Vencord global may not be assigned yet when
+    // this waitFor fires during webpack patching (before the IIFE returns).
+    queueMicrotask(() => Vencord?.Plugins?.subscribeAllPluginsFluxEvents?.(m));
 
     const cb = () => {
         m.unsubscribe("CONNECTION_OPEN", cb);
@@ -225,7 +227,7 @@ export const ExpressionPickerStore: t.ExpressionPickerStore = mapMangledModuleLa
     openExpressionPicker: filters.byCode(/setState\({activeView:(?:(?!null)\i),activeViewType:/),
     closeExpressionPicker: filters.byCode("setState({activeView:null"),
     toggleMultiExpressionPicker: filters.byCode(".EMOJI,"),
-    toggleExpressionPicker: filters.byCode(/getState\(\)\.activeView===\i\?\i\(\):\i\(/),
+    toggleExpressionPicker: filters.byCode(/\i\.activeView===\i&&\i\.activeViewType===\i&&/),
     setExpressionPickerView: filters.byCode(/setState\({activeView:\i,lastActiveView:/),
     setSearchQuery: filters.byCode("searchQuery:"),
     useExpressionPickerStore: filters.byCode(/\(\i,\i=\i\)=>/)

@@ -12,6 +12,7 @@ import { Heading } from "@components/Heading";
 import { Paragraph } from "@components/Paragraph";
 import { TestcordDevs } from "@utils/constants";
 import { getCurrentChannel, sendMessage } from "@utils/discord";
+import { sleep as wait } from "@utils/misc";
 import { useForceUpdater } from "@utils/react";
 import definePlugin, { OptionType } from "@utils/types";
 import { Button, React, TextInput } from "@webpack/common";
@@ -27,6 +28,7 @@ const MESSAGE_ENTRIES_KEY = "AutoMessageRepeater_messageEntries";
 
 let isRepeating = false;
 let activeTimers: NodeJS.Timeout[] = []; // Track all active timers for cleanup
+const repeatListeners = new Set<() => void>();
 
 // Logic for random sentence injection
 let commandsSinceLastRandom = 0;
@@ -74,8 +76,7 @@ function generateRandomSentence(wordList: string): string {
     return text.charAt(0).toUpperCase() + text.slice(1) + ".";
 }
 
-// Helper to wait
-const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const emitRepeaterChange = () => repeatListeners.forEach(listener => listener());
 
 async function sendMessageEntry(entry: MessageEntry) {
     if (!isRepeating) return;
@@ -129,6 +130,8 @@ function scheduleNextMessage(entry: MessageEntry) {
     }
 
     const timerId = setTimeout(async () => {
+        // Drop this fired handle so activeTimers only holds still-pending timers, not every timer ever created
+        activeTimers = activeTimers.filter(timer => timer !== timerId);
         await sendMessageEntry(entry);
         // Recursively schedule the next message for this specific entry
         scheduleNextMessage(entry);
@@ -145,6 +148,7 @@ async function startRepeating() {
     if (!currentChannel) return;
 
     isRepeating = true;
+    emitRepeaterChange();
     activeTimers = [];
     commandsSinceLastRandom = 0;
     targetCommandsForRandom = Math.floor(Math.random() * 5) + 1; // Initial random target
@@ -154,6 +158,7 @@ async function startRepeating() {
         const initialDelay = index * 100; // 0ms, 100ms, 200ms...
 
         const timerId = setTimeout(async () => {
+            activeTimers = activeTimers.filter(timer => timer !== timerId);
             await sendMessageEntry(entry);
             // 2. After the initial send, start the individual timer loop for this entry
             scheduleNextMessage(entry);
@@ -165,6 +170,7 @@ async function startRepeating() {
 
 function stopRepeating() {
     isRepeating = false;
+    emitRepeaterChange();
     // Clear all running timers
     activeTimers.forEach(timer => clearTimeout(timer));
     activeTimers = [];
@@ -224,29 +230,27 @@ function MessageEntries() {
         loadEntries();
     }, []);
 
-    async function setMessage(id: string, value: string) {
-        try {
-            const index = messageEntries.findIndex(entry => entry.id === id);
-            if (index !== -1) {
-                messageEntries[index].message = value;
-                await DataStore.set(MESSAGE_ENTRIES_KEY, messageEntries);
-                update();
-            }
-        } catch (error) {
-            console.error("AutoMessageRepeater: Failed to update message:", error);
+    function setMessage(id: string, value: string) {
+        const index = messageEntries.findIndex(entry => entry.id === id);
+        if (index !== -1) {
+            messageEntries[index].message = value;
+            update();
         }
     }
 
-    async function setDelay(id: string, value: string) {
+    function setDelay(id: string, value: string) {
+        const index = messageEntries.findIndex(entry => entry.id === id);
+        if (index !== -1) {
+            messageEntries[index].delay = value;
+            update();
+        }
+    }
+
+    async function saveEntries() {
         try {
-            const index = messageEntries.findIndex(entry => entry.id === id);
-            if (index !== -1) {
-                messageEntries[index].delay = value;
-                await DataStore.set(MESSAGE_ENTRIES_KEY, messageEntries);
-                update();
-            }
+            await DataStore.set(MESSAGE_ENTRIES_KEY, messageEntries);
         } catch (error) {
-            console.error("AutoMessageRepeater: Failed to update delay:", error);
+            console.error("AutoMessageRepeater: Failed to save messages:", error);
         }
     }
 
@@ -271,6 +275,7 @@ function MessageEntries() {
                         placeholder="Enter message or command"
                         value={entry.message}
                         onChange={e => setMessage(entry.id, e)}
+                        onBlur={saveEntries}
                     />
                 </div>
 
@@ -280,6 +285,7 @@ function MessageEntries() {
                         placeholder="1s"
                         value={entry.delay}
                         onChange={e => setDelay(entry.id, e)}
+                        onBlur={saveEntries}
                     />
                 </div>
             </div>
@@ -372,26 +378,21 @@ export default definePlugin({
     description: "Automatically repeat messages/commands with customizable delays and anti-detection features",
     tags: ["Chat", "Utility"],
     authors: [TestcordDevs.x2b],
+    dependencies: ["HeaderBarAPI"],
     settings,
 
     chatBarButton: {
         icon: StartRepeaterIcon as any,
         render: (({ isMainChat }) => {
-            if (!isMainChat || settings.store.location !== "chatbar") return null;
-
-        // Local state to track if the repeater is visually running
         const [isRunning, setIsRunning] = React.useState(isRepeating);
 
-        // Effect to sync local state with the global isRepeating variable
         React.useEffect(() => {
-            const interval = setInterval(() => {
-                if (isRunning !== isRepeating) {
-                    setIsRunning(isRepeating);
-                }
-            }, 100); // Check every 100ms
-            return () => clearInterval(interval);
-        }, [isRunning]);
+            const listener = () => setIsRunning(isRepeating);
+            repeatListeners.add(listener);
+            return () => void repeatListeners.delete(listener);
+        }, []);
 
+        if (!isMainChat || settings.store.location !== "chatbar") return null;
         return (
             <ChatBarButton
                 tooltip={isRunning ? "Stop Auto Repeating" : "Start Auto Repeating"}
@@ -434,6 +435,7 @@ export default definePlugin({
 
     stop() {
         stopRepeating();
+        repeatListeners.clear();
         removeHeaderBarButton("AutoMessageRepeater");
         removeChannelToolbarButton("AutoMessageRepeater");
     }

@@ -77,6 +77,7 @@ export interface Settings {
     plugins: {
         [plugin: string]: {
             enabled: boolean;
+            isFavorite?: boolean;
             [setting: string]: any;
         };
     };
@@ -102,12 +103,6 @@ export interface Settings {
     };
 
     ignoreResetWarning: boolean;
-
-    userCssVars: {
-        [themeId: string]: {
-            [varName: string]: string;
-        };
-    };
 }
 
 const DefaultSettings: Settings = {
@@ -155,8 +150,6 @@ const DefaultSettings: Settings = {
     },
 
     ignoreResetWarning: false,
-
-    userCssVars: {}
 };
 
 const settings = !IS_REPORTER ? VencordNative.settings.get() : {} as Settings;
@@ -202,9 +195,24 @@ export const SettingsStore = new SettingsStoreClass(settings, {
 });
 
 if (!IS_REPORTER) {
+    let flushQueued = false;
+    const changedPaths = new Set<string>();
+
     SettingsStore.addGlobalChangeListener((_, path) => {
-        SettingsStore.plain.cloud.settingsSyncVersion = Date.now();
-        VencordNative.settings.set(SettingsStore.plain, path);
+        changedPaths.add(path);
+
+        if (flushQueued) return;
+        flushQueued = true;
+
+        queueMicrotask(() => {
+            flushQueued = false;
+
+            const path = changedPaths.size === 1 ? changedPaths.values().next().value : "";
+            changedPaths.clear();
+
+            SettingsStore.plain.cloud.settingsSyncVersion = Date.now();
+            VencordNative.settings.set(SettingsStore.plain, path);
+        });
     });
 }
 
@@ -232,12 +240,21 @@ export const Settings = SettingsStore.store;
  * @returns Settings
  */
 // TODO: Representing paths as essentially "string[].join('.')" wont allow dots in paths, change to "paths?: string[][]" later
-export function useSettings(paths?: UseSettings<Settings>[]) {
+export function useSettings(paths?: readonly UseSettings<Settings>[]) {
     const [, forceUpdate] = React.useReducer(() => ({}), {});
 
+    // Almost every call site passes a fresh array literal, so keying the effect on the
+    // array identity tore down and rebuilt every listener on every single render. Key on
+    // the contents instead and read the current paths through a ref.
+    const pathsRef = React.useRef(paths);
+    pathsRef.current = paths;
+    const pathKey = paths ? paths.join("\0") : null;
+
     useEffect(() => {
-        if (paths) {
-            paths.forEach(p => {
+        const currentPaths = pathsRef.current;
+
+        if (currentPaths) {
+            currentPaths.forEach(p => {
                 if (p.endsWith(".*")) {
                     SettingsStore.addPrefixChangeListener(p.slice(0, -2), forceUpdate);
                 } else {
@@ -245,7 +262,7 @@ export function useSettings(paths?: UseSettings<Settings>[]) {
                 }
             });
 
-            return () => paths.forEach(p => {
+            return () => currentPaths.forEach(p => {
                 if (p.endsWith(".*")) {
                     SettingsStore.removePrefixChangeListener(p.slice(0, -2), forceUpdate);
                 } else {
@@ -256,7 +273,7 @@ export function useSettings(paths?: UseSettings<Settings>[]) {
             SettingsStore.addGlobalChangeListener(forceUpdate);
             return () => SettingsStore.removeGlobalChangeListener(forceUpdate);
         }
-    }, [paths]);
+    }, [pathKey]);
 
     return SettingsStore.store;
 }
@@ -337,7 +354,7 @@ export function migrateSettingsFromPlugin(newPlugin: string, oldPlugin: string, 
     SettingsStore.markAsChanged();
 }
 
-export function migrateOldSettingToNewPlugin(newPlugin: string, newSetting: string, oldPlugin: string, oldSetting: string,) {
+export function migrateOldSettingToNewPlugin(newPlugin: string, newSetting: string, oldPlugin: string, oldSetting: string) {
     const { plugins } = SettingsStore.plain;
     const oldSettings = plugins[oldPlugin];
     const newSettings = plugins[newPlugin];

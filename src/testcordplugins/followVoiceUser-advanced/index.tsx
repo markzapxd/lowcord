@@ -6,7 +6,7 @@
 
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { Channel, User, VoiceState } from "@vencord/discord-types";
 import { findByPropsLazy, findStoreLazy } from "@webpack";
@@ -44,19 +44,16 @@ const settings = definePluginSettings({
 
 const UserContextMenuPatch: NavContextMenuPatchCallback = (children, { channel, user }: UserContextProps) => {
     if (UserStore.getCurrentUser().id === user.id) return;
-
-    const [checked, setChecked] = React.useState(followedUserInfo?.userId === user.id);
-
+    const isFollowed = followedUserInfo?.userId === user.id;
     children.push(
         <Menu.MenuSeparator />,
         <Menu.MenuCheckboxItem
             id="fvu-follow-user"
             label="Follow User"
-            checked={checked}
+            checked={isFollowed}
             action={() => {
                 if (followedUserInfo?.userId === user.id) {
                     followedUserInfo = null;
-                    setChecked(false);
                     return;
                 }
 
@@ -64,12 +61,10 @@ const UserContextMenuPatch: NavContextMenuPatchCallback = (children, { channel, 
                     lastChannelId: UserStore.getCurrentUser().id,
                     userId: user.id
                 };
-                setChecked(true);
             }}
-        ></Menu.MenuCheckboxItem>
+        />
     );
 };
-
 
 export default definePlugin({
     name: "FollowVoiceUser-Extand",
@@ -112,8 +107,3 @@ export default definePlugin({
         "user-context": UserContextMenuPatch
     }
 });
-
-
-
-
-

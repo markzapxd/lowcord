@@ -26,6 +26,24 @@ const COMMON_HEBREW_WORDS = [
     "רב", "כושר", "פסח", "חנוכה",
 ];
 
+const LATIN_HEBREW_WORDS = COMMON_HEBREW_WORDS.filter(w => !HEBREW_UNICODE_REGEX.test(w));
+const HEBREW_CHAR_WORDS = COMMON_HEBREW_WORDS.filter(w => HEBREW_UNICODE_REGEX.test(w));
+
+let _latinWordRegex: RegExp | null = null;
+let _hebrewWordRegex: RegExp | null = null;
+let _wordRegexCaseSensitive: boolean | null = null;
+
+function getWordRegexes() {
+    const caseSensitive = settings.store.caseSensitiveWordDetection;
+    if (_wordRegexCaseSensitive === caseSensitive && _latinWordRegex && _hebrewWordRegex) {
+        return { latin: _latinWordRegex, hebrew: _hebrewWordRegex };
+    }
+    _wordRegexCaseSensitive = caseSensitive;
+    _latinWordRegex = new RegExp(`\\b(?:${LATIN_HEBREW_WORDS.join("|")})\\b`, caseSensitive ? "" : "i");
+    _hebrewWordRegex = new RegExp(HEBREW_CHAR_WORDS.join("|"), "i");
+    return { latin: _latinWordRegex, hebrew: _hebrewWordRegex };
+}
+
 const settings = definePluginSettings({
     detectHebrewChars: {
         type: OptionType.BOOLEAN,
@@ -77,19 +95,9 @@ function detectHebrewText(message: Message): boolean {
 
     // Check for common Hebrew words
     if (settings.store.detectHebrewWords) {
-        const caseSensitive = settings.store.caseSensitiveWordDetection;
-        const textToSearch = caseSensitive ? content : content.toLowerCase();
-
-        for (const word of COMMON_HEBREW_WORDS) {
-            const wordToCheck = caseSensitive ? word : word.toLowerCase();
-            const isHebrewChars = /[\u0590-\u05FF]/.test(word);
-            const regex = isHebrewChars
-                ? new RegExp(word, caseSensitive ? "" : "i")
-                : new RegExp(`\\b${wordToCheck}\\b`, caseSensitive ? "" : "i");
-
-            if (regex.test(textToSearch)) {
-                return true;
-            }
+        const { latin, hebrew } = getWordRegexes();
+        if (hebrew.test(content) || latin.test(content)) {
+            return true;
         }
     }
 
@@ -112,19 +120,9 @@ function detectText(text: string): boolean {
     }
 
     if (settings.store.detectHebrewWords) {
-        const caseSensitive = settings.store.caseSensitiveWordDetection;
-        const textToSearch = caseSensitive ? text : text.toLowerCase();
-
-        for (const word of COMMON_HEBREW_WORDS) {
-            const wordToCheck = caseSensitive ? word : word.toLowerCase();
-            const isHebrewChars = /[\u0590-\u05FF]/.test(word);
-            const regex = isHebrewChars
-                ? new RegExp(word, caseSensitive ? "" : "i")
-                : new RegExp(`\\b${wordToCheck}\\b`, caseSensitive ? "" : "i");
-
-            if (regex.test(textToSearch)) {
-                return true;
-            }
+        const { latin, hebrew } = getWordRegexes();
+        if (hebrew.test(text) || latin.test(text)) {
+            return true;
         }
     }
 
@@ -152,6 +150,9 @@ function hiddenReplyComponent() {
     );
 }
 
+const hebrewCheckCache = new Map<string, boolean>();
+const HEBREW_CACHE_MAX = 500;
+
 export default definePlugin({
     name: "AntiSoap (hideSoap)",
     description: "basically hide all messages from j*ws",
@@ -161,24 +162,37 @@ export default definePlugin({
     shouldHideUser,
     hiddenReplyComponent,
 
+    stop() {
+        hebrewCheckCache.clear();
+    },
+
     flux: {
         MESSAGE_CREATE({ message }) {
             if (!message?.author?.id || message.author.bot) return;
 
             // Check if message contains Hebrew text
-            if (detectHebrewText(message)) {
-                const userId = message.author.id;
+            const userId = message.author.id;
+            const cached = hebrewCheckCache.get(userId);
+            if (cached === true) return;
+            if (cached === false) return;
 
-                // Add user to custom blocked list if not already there
-                const currentBlocked = settings.store.customBlockedUsers;
-                const blockedList = currentBlocked.length > 0
-                    ? currentBlocked.split(", ").filter(Boolean)
-                    : [];
+            const hasHebrew = detectHebrewText(message);
+            if (hebrewCheckCache.size >= HEBREW_CACHE_MAX) {
+                const firstKey = hebrewCheckCache.keys().next().value;
+                if (firstKey) hebrewCheckCache.delete(firstKey);
+            }
+            hebrewCheckCache.set(userId, hasHebrew);
+            if (!hasHebrew) return;
 
-                if (!blockedList.includes(userId)) {
-                    blockedList.push(userId);
-                    settings.store.customBlockedUsers = blockedList.join(", ");
-                }
+            // Add user to custom blocked list if not already there
+            const currentBlocked = settings.store.customBlockedUsers;
+            const blockedList = currentBlocked.length > 0
+                ? currentBlocked.split(", ").filter(Boolean)
+                : [];
+
+            if (!blockedList.includes(userId)) {
+                blockedList.push(userId);
+                settings.store.customBlockedUsers = blockedList.join(", ");
             }
         }
     },

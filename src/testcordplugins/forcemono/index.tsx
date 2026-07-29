@@ -1,7 +1,8 @@
 /*
-MIT License
-Copyright (c) 2024 Xicord
-*/
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
 
 import { definePluginSettings } from "@api/Settings";
 import { UserAreaButton, UserAreaRenderProps } from "@api/UserArea";
@@ -64,8 +65,10 @@ function MonoIcon({ className, active }: { className?: string; active?: boolean;
     );
 }
 
+const FORCE_MONO_KEYS = ["forceMono"] as const;
+
 function MonoToggleButton({ iconForeground, hideTooltips, nameplate }: UserAreaRenderProps) {
-    const { forceMono } = settings.use(["forceMono"]);
+    const { forceMono } = settings.use(FORCE_MONO_KEYS);
 
     return (
         <UserAreaButton
@@ -92,7 +95,7 @@ function MonoToggleButton({ iconForeground, hideTooltips, nameplate }: UserAreaR
 export default definePlugin({
     name: "Force Mono",
     description: "forces mono audio on audio",
-    authors: [{ name: "deracul", id: 1454268753629024529n}],
+    authors: [{ name: "deracul", id: 1454268753629024529n }],
     tags: ["Voice"],
     settings,
 

@@ -12,28 +12,28 @@ export default definePlugin({
     description: "API to add collections to the user profile panel like discords game collection.",
     authors: [Devs.thororen],
     patches: [
-        // message and member list popouts
-        {
-            find: '"UserProfilePopout");',
-            replacement: {
-                match: /user:\i,widgets:.{0,100}?\}\),/,
-                replace: "$&Vencord.Api.ProfileCollections.renderProfileCollections(arguments[0]),",
-            }
-        },
-        // user panel popout
+        // user panel popout — inject after Discord's widgets component
         {
             find: '"UserProfileAccountPopout"',
             replacement: {
-                match: /user:\i,widgets:.{0,100}}\),/,
-                replace: "$&Vencord.Api.ProfileCollections.renderProfileCollections(arguments[0]),",
+                match: /onOpenUserProfileModal:\i\}\)(?=,)/,
+                replace: "$&,Vencord.Api.ProfileCollections.renderProfileCollections({user:t,displayProfile:h,isSideBar:false})",
             },
         },
         // dm sidebar
         {
-            find: ".SIDEBAR,disableToolbar:",
+            find: "SIDEBAR,disableToolbar:",
             replacement: {
-                match: /user:\i,widgets:.{0,100}?\}\),(?=.{0,200}#{intl::USER_PROFILE_WISHLIST})/,
-                replace: "$&Vencord.Api.ProfileCollections.renderProfileCollections({...arguments[0],isSideBar:true}),"
+                match: /widgets:\i\.widgets,onOpenUserProfileModal:\i\}\)\}\)(?=,)/,
+                replace: "$&,Vencord.Api.ProfileCollections.renderProfileCollectionsForUser(n.id,true)"
+            }
+        },
+        // user profile popout — message/member list popup
+        {
+            find: '"UserProfilePopout"',
+            replacement: {
+                match: /onOpenUserProfileModal:\i}\)(?=,)/,
+                replace: "$&,Vencord.Api.ProfileCollections.renderProfileCollections({user:i,displayProfile:n,isSideBar:false})"
             }
         }
     ]

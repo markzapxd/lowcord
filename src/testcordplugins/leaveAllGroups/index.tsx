@@ -5,13 +5,14 @@
  */
 
 import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
-import { definePluginSettings } from "@api/Settings";
 import { showNotification } from "@api/Notifications";
-import { Devs, TestcordDevs } from "@utils/constants";
+import { definePluginSettings } from "@api/Settings";
+import { TestcordDevs } from "@utils/constants";
+import { sleep } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
-import { findStoreLazy } from "@webpack";
-import { ChannelStore, FluxDispatcher, Menu, RestAPI, showToast, Toasts, UserStore } from "@webpack/common";
 import { Channel } from "@vencord/discord-types";
+import { findStoreLazy } from "@webpack";
+import { ChannelStore, Menu, RestAPI, showToast, Toasts, UserStore } from "@webpack/common";
 
 // Use PrivateChannelSortStore like in other plugins
 const PrivateChannelSortStore = findStoreLazy("PrivateChannelSortStore") as { getPrivateChannelIds: () => string[]; };
@@ -37,7 +38,7 @@ const settings = definePluginSettings({
         description: "Delay in milliseconds between each group leave (to avoid rate limiting)",
         default: 200,
         min: 50,
-        max: 100
+        max: 2000
     },
     debugMode: {
         type: OptionType.BOOLEAN,
@@ -148,7 +149,7 @@ async function leaveAllGroups() {
                 });
             }
 
-            showToast(Toasts.Type.MESSAGE, "ℹ️ No groups to leave");
+            showToast("ℹ️ No groups to leave", Toasts.Type.MESSAGE);
             return;
         }
 
@@ -172,7 +173,7 @@ async function leaveAllGroups() {
             });
         }
 
-        showToast(Toasts.Type.MESSAGE, `🔄 Leaving ${groups.length} group(s)...`);
+        showToast(`🔄 Leaving ${groups.length} group(s)...`, Toasts.Type.MESSAGE);
 
         // Leave each group
         for (const group of groups) {
@@ -190,7 +191,7 @@ async function leaveAllGroups() {
 
             // Delay to avoid rate limiting
             if (settings.store.delayBetweenLeaves > 0) {
-                await new Promise(resolve => setTimeout(resolve, settings.store.delayBetweenLeaves));
+                await sleep(settings.store.delayBetweenLeaves);
             }
         }
 
@@ -217,9 +218,9 @@ async function leaveAllGroups() {
 
         // Final toast
         if (failureCount > 0) {
-            showToast(Toasts.Type.FAILURE, `⚠️ ${successCount} groups left, ${failureCount} failures`);
+            showToast(`⚠️ ${successCount} groups left, ${failureCount} failures`, Toasts.Type.FAILURE);
         } else {
-            showToast(Toasts.Type.SUCCESS, `✅ ${successCount} groups left successfully`);
+            showToast(`✅ ${successCount} groups left successfully`, Toasts.Type.SUCCESS);
         }
 
     } catch (error) {
@@ -233,7 +234,7 @@ async function leaveAllGroups() {
             });
         }
 
-        showToast(Toasts.Type.FAILURE, "❌ Error while leaving groups");
+        showToast("❌ Error while leaving groups", Toasts.Type.FAILURE);
     }
 }
 
@@ -315,8 +316,3 @@ export default definePlugin({
         log("Plugin LeaveAllGroups stopped");
     }
 });
-
-
-
-
-

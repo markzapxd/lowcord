@@ -1,6 +1,6 @@
 /*
- * Equicord, a Discord client mod
- * Copyright (c) 2024 Nightcord contributors
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -12,6 +12,9 @@ const RelationshipActions = findByPropsLazy("removeFriend", "sendFriendRequest")
 
 // RelationshipType 4 = OUTGOING_REQUEST
 const OUTGOING_REQUEST = 4;
+
+// Module-scoped so stop() can clear a pending debounce timer the observer scheduled
+let scanTimer: ReturnType<typeof setTimeout> | null = null;
 
 function cancelRequest(userId: string) {
     try {
@@ -26,6 +29,16 @@ function cancelRequest(userId: string) {
     }
 }
 
+function hasOutgoingRequests(): boolean {
+    try {
+        const rels = (RelationshipStore as any).getRelationships?.() ?? {};
+        for (const type of Object.values(rels)) {
+            if (type === OUTGOING_REQUEST) return true;
+        }
+    } catch {}
+    return false;
+}
+
 function getUserIdFromOutgoingRelationships(): string | null {
     try {
         const rels = (RelationshipStore as any).getRelationships?.() ?? {};
@@ -36,7 +49,7 @@ function getUserIdFromOutgoingRelationships(): string | null {
     return null;
 }
 
-let observer: MutationObserver | null = null;
+let observer: ReturnType<typeof setInterval> | null = null;
 const patchedButtons = new Set<HTMLElement>();
 
 function patchBtn(btn: HTMLElement, userId: string) {
@@ -57,11 +70,14 @@ function patchBtn(btn: HTMLElement, userId: string) {
 }
 
 function scan(root: Document | Element = document) {
+    // Nothing to patch when there are no outgoing requests; skip the document sweeps.
+    if (!hasOutgoingRequests()) return;
+
     // ── Case 1: profile popup ─────────────────────────────────────────────────
     // aria-label="Outgoing Friend Request" — invariant regardless of UI language
     root.querySelectorAll<HTMLElement>('button[aria-label="Outgoing Friend Request"]').forEach(btn => {
         // Find the userId via the profile container
-        const profileContainer = btn.closest("[class*='profileButtons']") 
+        const profileContainer = btn.closest("[class*='profileButtons']")
             ?? btn.closest("[class*='profileHeader']")
             ?? btn.closest("[class*='inner']");
         if (!profileContainer) return;
@@ -113,22 +129,26 @@ export default definePlugin({
     authors: [{ name: "Nightcord", id: 0n }],
 
     start() {
-        let scanTimer: ReturnType<typeof setTimeout> | null = null;
-        observer = new MutationObserver(() => {
+        observer = setInterval(() => {
             if (scanTimer) return;
+            // Check the store before scheduling. Without an outgoing request there is
+            // nothing to patch, so the two substring-class document sweeps inside scan()
+            // would walk the whole tree for nothing.
+            if (!hasOutgoingRequests()) return;
             scanTimer = setTimeout(() => {
                 scanTimer = null;
                 scan(document);
             }, 300);
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
+        }, 1000);
         scan(document);
-        console.log("[CancelFriendRequest] Started ✓");
     },
 
     stop() {
-        observer?.disconnect();
-        observer = null;
+        if (scanTimer) {
+            clearTimeout(scanTimer);
+            scanTimer = null;
+        }
+        if (observer) { clearInterval(observer); observer = null; }
         for (const btn of patchedButtons) {
             const handler = (btn as any)._cfpHandler;
             if (handler) {

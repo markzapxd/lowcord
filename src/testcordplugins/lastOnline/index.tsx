@@ -9,7 +9,6 @@ import { Logger } from "@utils/Logger";
 import definePlugin from "@utils/types";
 import { User } from "@vencord/discord-types";
 
-
 const fs = (window as any).require?.("fs");
 const os = (window as any).require?.("os");
 const pathModule = (window as any).require?.("path");
@@ -115,8 +114,6 @@ function formatTime(time: number) {
     if (m > 0) return `${m}m`;
     return "1m";
 }
-
-
 
 export default definePlugin({
     name: "LastOnline",

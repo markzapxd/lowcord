@@ -25,7 +25,7 @@ import { Readable } from "stream";
 import { finished } from "stream/promises";
 import { fileURLToPath } from "url";
 
-const BASE_URL = "https://github.com/Equicord/Equilotl/releases/latest/download/";
+const BASE_URL = "https://github.com/markzapxd/Equilotl/releases/latest/download/";
 const INSTALLER_PATH_DARWIN = "Equilotl.app/Contents/MacOS/Equilotl";
 const INSTALLER_APP_DARWIN = "Equilotl.app";
 
@@ -36,18 +36,18 @@ const ETAG_FILE = join(FILE_DIR, "etag.txt");
 function getFilename() {
     switch (process.platform) {
         case "win32":
-            return "EquilotlCli.exe";
+            return "LowCordInstallerCli.exe";
         case "darwin":
             switch (process.arch) {
                 case "x64":
-                    return "Equilotl-darwin-x64.zip";
+                    return "LowCordInstaller-darwin-x64.zip";
                 case "arm64":
-                    return "Equilotl-darwin-arm64.zip";
+                    return "LowCordInstaller-darwin-arm64.zip";
                 default:
                     throw new Error("Unsupported macOS architecture: " + process.arch);
             }
         case "linux":
-            return "EquilotlCli-linux";
+            return "LowCordInstallerCli-linux";
         default:
             throw new Error("Unsupported platform: " + process.platform);
     }
@@ -73,7 +73,7 @@ async function ensureBinary() {
 
     const res = await fetch(BASE_URL + filename, {
         headers: {
-            "User-Agent": "Equicord (https://github.com/Equicord/Equicord)",
+            "User-Agent": "LowCord (https://github.com/markzapxd/lowcord)",
             "If-None-Match": etag
         }
     });

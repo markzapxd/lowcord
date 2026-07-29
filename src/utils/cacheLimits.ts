@@ -1,3 +1,9 @@
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 export let DIFF_CACHE_MAX = 2000;
 export let TRANSLATION_CACHE_MAX = 500;
 export let ZIP_CACHE_MAX = 100;

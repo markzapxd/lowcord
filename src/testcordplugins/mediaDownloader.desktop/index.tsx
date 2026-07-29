@@ -341,8 +341,3 @@ async function download(channel: Channel, {
     // See petpet
     setTimeout(() => UploadHandler.promptToUpload([file], channel, DraftType.ChannelMessage), 10);
 }
-
-
-
-
-

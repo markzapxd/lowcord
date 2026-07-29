@@ -4,10 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { definePluginSettings } from "@api/Settings";
 import { showNotification } from "@api/Notifications";
+import { definePluginSettings } from "@api/Settings";
+import { sleep } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
-import { Constants, ChannelStore, RestAPI, UserStore } from "@webpack/common";
+import { ChannelStore, Constants, RestAPI, UserStore } from "@webpack/common";
 
 const settings = definePluginSettings({
     enabled: {
@@ -68,14 +69,13 @@ async function leaveGroupDM(channelId: string) {
         const channel = ChannelStore.getChannel(channelId);
         const channelName = channel?.name || "Unnamed group";
 
-
         if (settings.store.autoReply && settings.store.replyMessage.trim()) {
             try {
                 await RestAPI.post({
                     url: Constants.Endpoints.MESSAGES(channelId),
                     body: { content: settings.store.replyMessage }
                 });
-                await new Promise(resolve => setTimeout(resolve, 500));
+                await sleep(500);
             } catch (msgError) {
                 log(`❌ Error sending automatic message: ${msgError}`, "error");
             }
@@ -154,10 +154,10 @@ export default definePlugin({
     },
 
     start() {
-        log(`[AntiGroup] Plugin started`);
+        log("[AntiGroup] Plugin started");
     },
 
     stop() {
-        log(`[AntiGroup] Plugin stopped`);
+        log("[AntiGroup] Plugin stopped");
     }
 });

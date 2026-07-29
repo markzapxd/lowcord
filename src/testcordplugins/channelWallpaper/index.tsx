@@ -1,16 +1,16 @@
 /*
- * Nightcord — ChannelWallpaper Plugin
- * Custom wallpaper per channel/DM (image, gif, looping video).
- * Right click on user/channel → Set/modify/delete wallpaper.
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
-import definePlugin, { OptionType } from "@utils/types";
 import { Devs } from "@utils/constants";
-import { findStoreLazy, findByPropsLazy } from "@webpack";
-import { ChannelStore, Menu, React, Toasts, showToast, SelectedChannelStore, FluxDispatcher, RelationshipStore, UserStore } from "@webpack/common";
 import { sendMessage } from "@utils/discord";
+import definePlugin, { OptionType } from "@utils/types";
+import { findByPropsLazy } from "@webpack";
+import { ChannelStore, Menu, React, RelationshipStore, SelectedChannelStore, showToast, Toasts, UserStore } from "@webpack/common";
 
 const MessageActions = findByPropsLazy("deleteMessage");
 const SYNC_PREFIX = "\u200b\u200c\u200bNC_WP:";
@@ -274,18 +274,18 @@ function applyWallpaper(channelId?: string) {
     };
 
     if (!tryInject()) {
-        const observer = new MutationObserver((_, obs) => {
-            if (tryInject()) {
-                obs.disconnect();
-                activeObservers.delete(observer);
+        let pollCount = 0;
+        const pollInterval = setInterval(() => {
+            if (tryInject() || ++pollCount > 30) {
+                clearInterval(pollInterval);
+                activeObservers.delete(pollInterval);
             }
-        });
-        activeObservers.add(observer);
-        observer.observe(document.body, { childList: true, subtree: true });
+        }, 500);
+        activeObservers.add(pollInterval);
         trackedTimeout(() => {
-            observer.disconnect();
-            activeObservers.delete(observer);
-        }, 3000);
+            clearInterval(pollInterval);
+            activeObservers.delete(pollInterval);
+        }, 15000);
     }
 }
 
@@ -378,7 +378,7 @@ let vpsSocket: WebSocket | null = null;
 let vpsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let stopping = false;
 const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
-const activeObservers = new Set<MutationObserver>();
+const activeObservers = new Set<ReturnType<typeof setInterval>>();
 
 function trackedTimeout(fn: () => void, ms: number) {
     const timer = setTimeout(() => {
@@ -393,7 +393,7 @@ function initVPSSync() {
     if (!settings.store.vpsUrl || stopping) return;
     try {
         vpsSocket = new WebSocket(settings.store.vpsUrl);
-        vpsSocket.onmessage = (e) => {
+        vpsSocket.onmessage = e => {
             try {
                 const data = JSON.parse(e.data);
                 if (data.type === "UPDATE" && data.channelId) {
@@ -519,7 +519,7 @@ export default definePlugin({
         }
         for (const timer of pendingTimers) clearTimeout(timer);
         pendingTimers.clear();
-        for (const observer of activeObservers) observer.disconnect();
+        for (const observer of activeObservers) clearInterval(observer);
         activeObservers.clear();
         removeWallpaperElements();
         if (vpsSocket) {

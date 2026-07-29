@@ -4,10 +4,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { sleep } from "@utils/index";
 import { TestcordDevs } from "@utils/constants";
+import { sleep } from "@utils/index";
 import definePlugin from "@utils/types";
-
 
 import { settings } from "./settings";
 
@@ -37,7 +36,6 @@ export default definePlugin({
             gifElement = document.querySelector(".moving-gif");
         }
     }
-
 
 });
 
@@ -75,7 +73,7 @@ export async function addGifToScreen() {
             // spinny spinny spinny spinny spinny spinny spinny
             gifElement.src = settings.store.gifLink2;
             gifElement.style.transition = "none";
-            await new Promise(resolve => setTimeout(resolve, getRandTime(4000, 8000)));
+            await sleep(getRandTime(4000, 8000));
             if (!maxwellRunning) break;
 
             // dancy dancy dancy dancy dancy dancy dancy
@@ -86,18 +84,12 @@ export async function addGifToScreen() {
             gifElement.style.bottom = `${y}px`;
 
             if (!gifElement.parentNode) break;
-            await new Promise(resolve => {
+            await new Promise<void>(resolve => {
                 if (!gifElement.parentNode) return resolve();
-                gifElement.addEventListener("transitionend", resolve, { once: true });
+                gifElement.addEventListener("transitionend", () => resolve(), { once: true });
             });
         }
     };
 
     if (maxwellRunning) timeToGetReallySilly();
 }
-
-
-
-
-
-

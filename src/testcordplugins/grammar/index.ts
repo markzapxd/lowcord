@@ -1,12 +1,12 @@
 /*
  * Vencord, a Discord client mod
- * Copyright (c) 2025 Vendicated and contributors
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
-*/
+ */
 
-import { addMessagePreSendListener, removeMessagePreSendListener, MessageSendListener, } from "@api/MessageEvents";
+import { addMessagePreSendListener, MessageSendListener,removeMessagePreSendListener, } from "@api/MessageEvents";
 import { definePluginSettings, Settings } from "@api/Settings";
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 
 const presendObject: MessageSendListener = (channelId, msg) => {
@@ -47,15 +47,14 @@ function textProcessing(input: string) {
 function apostrophe(textInput: string): string {
     const corrected = "wasn't, can't, don't, won't, isn't, aren't, haven't, hasn't, hadn't, doesn't, didn't, shouldn't, wouldn't, couldn't, i'm, you're, he's, she's, it's, they're, that's, who's, what's, there's, here's, how's, where's, when's, why's, let's, you'll, I'll, they'll, it'll, I've, you've, we've, they've, you'd, he'd, she'd, it'd, we'd, they'd, y'all".toLowerCase();
     const words: string[] = corrected.split(", ");
+    const contractionMap = new Map<string, string>();
+    for (const w of words) contractionMap.set(removeApostrophes(w), w);
     const wordsInputted = textInput.split(" ");
 
-    wordsInputted.forEach(element => {
-        words.forEach(wordelement => {
-            if (removeApostrophes(wordelement) === element.toLowerCase()) {
-                wordsInputted[wordsInputted.indexOf(element)] = restoreCap(wordelement, getCapData(element));
-            }
-        });
-    });
+    for (let i = 0; i < wordsInputted.length; i++) {
+        const match = contractionMap.get(wordsInputted[i].toLowerCase());
+        if (match) wordsInputted[i] = restoreCap(match, getCapData(wordsInputted[i]));
+    }
     return wordsInputted.join(" ");
 }
 
@@ -107,8 +106,3 @@ function cap(textInput: string): string {
 
     }).join(" ");
 }
-
-
-
-
-

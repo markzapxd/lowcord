@@ -1,6 +1,6 @@
 /*
- * TestCord, a Discord client mod
- * Copyright (c) 2026 Mixiruri
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -8,12 +8,11 @@ import { ApplicationCommandInputType, ApplicationCommandOptionType, sendBotMessa
 import { TestcordDevs } from "@utils/constants";
 import { sendMessage } from "@utils/discord";
 import { Logger } from "@utils/Logger";
+import { sleep } from "@utils/misc";
 import definePlugin from "@utils/types";
-import { findByPropsLazy } from "@webpack";
-import { UserStore } from "@webpack/common";
+import { UserSettingsProtoStore } from "@webpack/common";
 
 const logger = new Logger("GifSpammer");
-const FavoritesStore = findByPropsLazy("getGIFFavorites", "getFavorites");
 
 export default definePlugin({
     name: "GifSpammer",
@@ -40,7 +39,8 @@ export default definePlugin({
 
                 let favs: any[] = [];
                 try {
-                    favs = FavoritesStore.getGIFFavorites?.() ?? FavoritesStore.getFavorites?.() ?? [];
+                    const gifs = UserSettingsProtoStore.frecencyWithoutFetchingLatest?.favoriteGifs?.gifs ?? {};
+                    favs = Object.values(gifs).map(g => ({ url: (g as any).src, src: (g as any).src }));
                 } catch (e) {
                     logger.error("Failed to get favorites", e);
                     sendBotMessage(ctx.channel.id, { content: "? Could not get your favorite GIFs." });
@@ -66,7 +66,7 @@ export default definePlugin({
                     }
 
                     if (i < favs.length - 1) {
-                        await new Promise(resolve => setTimeout(resolve, delay));
+                        await sleep(delay);
                     }
                 }
 

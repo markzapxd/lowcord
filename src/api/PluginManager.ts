@@ -26,6 +26,7 @@ import { addMessageDecoration, removeMessageDecoration } from "@api/MessageDecor
 import { addMessageClickListener, addMessagePreEditListener, addMessagePreSendListener, removeMessageClickListener, removeMessagePreEditListener, removeMessagePreSendListener } from "@api/MessageEvents";
 import { addMessagePopoverButton, removeMessagePopoverButton } from "@api/MessagePopover";
 import { addNicknameIcon, removeNicknameIcon } from "@api/NicknameIcons";
+import { PluginHealth } from "@api/PluginHealth";
 import { Settings, SettingsStore } from "@api/Settings";
 import { disableStyle, enableStyle, removeStyle } from "@api/Styles";
 import { traceFunction } from "@debug/Tracer";
@@ -50,6 +51,7 @@ import { addUserAreaButton, removeUserAreaButton } from "./UserArea";
 const logger = new Logger("PluginManager", "#a6d189");
 
 export const PMLogger = logger;
+export const pluginStartTimings = new Map<string, { duration: number; success: boolean; }>();
 
 /** Whether we have subscribed to flux events of all the enabled plugins when FluxDispatcher was ready */
 let enabledPluginsSubscribedFlux = false;
@@ -128,7 +130,11 @@ function isReporterTestable(p: Plugin, part: ReporterTestable) {
 }
 
 export function pluginRequiresRestart(p: Plugin) {
-    return p.requiresRestart !== false && (p.requiresRestart || !!p.patches?.length);
+    return p.requiresRestart !== false && (
+        Boolean(p.requiresRestart) ||
+        Boolean(p.patches?.length) ||
+        (p.startAt !== undefined && p.startAt !== StartAt.WebpackReady)
+    );
 }
 
 export const startAllPlugins = traceFunction("startAllPlugins", function startAllPlugins(target: StartAt) {
@@ -146,6 +152,14 @@ export const startAllPlugins = traceFunction("startAllPlugins", function startAl
     }
     for (const start of pending) {
         try { start(); } catch (e) { logger.error("Failed to start plugin", e); }
+    }
+
+    // After the final "WebpackReady" start pass, publish the set of enabled
+    // plugins to PluginHealth so the stability tracker can score sessions
+    // against a stable reference of "was actually enabled this session".
+    if (target === StartAt.WebpackReady) {
+        const enabled = Object.keys(Plugins).filter(isPluginEnabled);
+        PluginHealth.registerEnabledPlugins(enabled);
     }
 });
 
@@ -189,10 +203,14 @@ export function subscribePluginFluxEvents(p: Plugin, fluxDispatcher: typeof Flux
                 try {
                     const res = handler!.apply(p, arguments as any);
                     return res instanceof Promise
-                        ? res.catch(e => logger.error(`${p.name}: Error while handling ${event}\n`, e))
+                        ? res.catch(e => {
+                            logger.error(`${p.name}: Error while handling ${event}\n`, e);
+                            PluginHealth.recordRuntimeError(p.name, `flux:${event}`, e);
+                        })
                         : res;
                 } catch (e) {
                     logger.error(`${p.name}: Error while handling ${event}\n`, e);
+                    PluginHealth.recordRuntimeError(p.name, `flux:${event}`, e);
                 }
             };
 
@@ -222,6 +240,11 @@ export function subscribeAllPluginsFluxEvents(fluxDispatcher: typeof FluxDispatc
 }
 
 export const startPlugin = traceFunction("startPlugin", function startPlugin(p: Plugin) {
+    const startedAt = performance.now();
+    const finish = (success: boolean) => {
+        pluginStartTimings.set(p.name, { duration: performance.now() - startedAt, success });
+        return success;
+    };
     const {
         name, commands, contextMenus, managedStyle, userProfileBadges,
         onBeforeMessageEdit, onBeforeMessageSend, onMessageClick,
@@ -236,13 +259,14 @@ export const startPlugin = traceFunction("startPlugin", function startPlugin(p: 
         logger.info("Starting plugin", name);
         if (p.started) {
             logger.warn(`${name} already started`);
-            return false;
+            return finish(false);
         }
         try {
             p.start();
         } catch (e) {
             logger.error(`Failed to start ${name}\n`, e);
-            return false;
+            PluginHealth.recordRuntimeError(name, "start", e);
+            return finish(false);
         }
     }
 
@@ -255,7 +279,7 @@ export const startPlugin = traceFunction("startPlugin", function startPlugin(p: 
                 registerCommand(cmd, name);
             } catch (e) {
                 logger.error(`Failed to register command ${cmd.name}\n`, e);
-                return false;
+                return finish(false);
             }
         }
     }
@@ -302,7 +326,7 @@ export const startPlugin = traceFunction("startPlugin", function startPlugin(p: 
     if (renderProfileSection) addProfileSection(name, renderProfileSection.render, renderProfileSection.priority);
     if (gifPickerContextMenu) addGifPickerContextMenuPatch(name, gifPickerContextMenu);
 
-    return true;
+    return finish(true);
 }, p => `startPlugin ${p.name}`);
 
 export const stopPlugin = traceFunction("stopPlugin", function stopPlugin(p: Plugin) {
@@ -326,6 +350,7 @@ export const stopPlugin = traceFunction("stopPlugin", function stopPlugin(p: Plu
             p.stop();
         } catch (e) {
             logger.error(`Failed to stop ${name}\n`, e);
+            PluginHealth.recordRuntimeError(name, "stop", e);
             return false;
         }
     }

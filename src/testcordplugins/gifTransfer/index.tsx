@@ -7,9 +7,14 @@
 import { definePluginSettings } from "@api/Settings";
 import { Link } from "@components/Link";
 import { TestcordDevs } from "@utils/constants";
+import { Logger } from "@utils/Logger";
+import { sleep } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
-import { findByPropsLazy } from "@webpack";
+import type { ModuleFactory } from "@vencord/discord-types/webpack";
+import { findByPropsLazy, wreq } from "@webpack";
 import { showToast, Toasts, UserSettingsActionCreators, UserSettingsProtoStore } from "@webpack/common";
+
+const logger = new Logger("GifTransfer");
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -36,6 +41,11 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Skip GIFs that are already in your favorites when importing",
         default: true,
+    },
+    runtimeUnlock: {
+        type: OptionType.BOOLEAN,
+        description: "Lift the favorite GIF limit at runtime without a restart. Re-evaluates Discord's FrecencyUserSettings module. Only needed if the limit patch did not apply on startup.",
+        default: false,
     },
     delayBetweenImports: {
         type: OptionType.NUMBER,
@@ -102,8 +112,49 @@ function getAddGifFn(): ((gif: any) => void) | null {
     };
 }
 
-function sleep(ms: number): Promise<void> {
-    return new Promise(r => setTimeout(r, ms));
+// ─── Runtime limit lift (no restart) ──────────────────────────────────────────
+
+let runtimeUnlockApplied = false;
+const LIMIT_RE = /\.toBinary\(t\)\.length>\d+/;
+
+function applyRuntimeUnlock(): boolean {
+    if (runtimeUnlockApplied) return true;
+
+    const factories = wreq?.m;
+    if (!factories) {
+        logger.warn("Webpack module map unavailable, cannot lift limit at runtime.");
+        return false;
+    }
+
+    for (const id in factories) {
+        const src = factories[id].toString();
+        if (!LIMIT_RE.test(src)) continue;
+
+        const patched = src.replace(LIMIT_RE, ".toBinary(t).length>Number.MAX_SAFE_INTEGER");
+        // Already lifted (e.g. by the static patch on this same module) — nothing to do.
+        if (patched === src) {
+            runtimeUnlockApplied = true;
+            logger.info("Limit already lifted on module", id, "skipping runtime re-eval.");
+            return true;
+        }
+
+        try {
+            const isArrow = patched.startsWith("(");
+            const wrapped = "0," + (isArrow ? "" : "function") + patched.slice(patched.indexOf("("));
+            wreq.m[id] = (0, eval)(wrapped) as ModuleFactory;
+            delete wreq.c[id];
+            wreq(id);
+            runtimeUnlockApplied = true;
+            logger.info("Lifted favorite GIF limit at runtime on module", id);
+            return true;
+        } catch (e) {
+            logger.error("Runtime limit lift failed on module", id, e);
+            return false;
+        }
+    }
+
+    logger.warn("Could not find the favorite GIF limit module to lift at runtime.");
+    return false;
 }
 
 // ─── Export ──────────────────────────────────────────────────────────────────
@@ -372,6 +423,12 @@ function injectButtons(navList: Element): void {
 }
 
 function tryInject(): void {
+    const pickerOpen = document.getElementById("gif-picker-tab") != null;
+    if (!pickerOpen) {
+        document.getElementById(BUTTONS_ID)?.remove();
+        return;
+    }
+
     const allTabLists = document.querySelectorAll('[role="tablist"]');
     for (const tl of allTabLists) {
         const label = (tl.getAttribute("aria-label") ?? "").toLowerCase();
@@ -399,24 +456,25 @@ function tryInject(): void {
     }
 }
 
-let observer: MutationObserver | null = null;
+let injectTimer: ReturnType<typeof setTimeout> | null = null;
+let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 function startObserver(): void {
-    let injectTimer: ReturnType<typeof setTimeout> | null = null;
-    observer = new MutationObserver(() => {
-        if (injectTimer) return;
-        injectTimer = setTimeout(() => {
-            injectTimer = null;
-            tryInject();
-        }, 300);
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
+    pollInterval = setInterval(() => {
+        tryInject();
+    }, 1000);
     tryInject();
 }
 
 function stopObserver(): void {
-    observer?.disconnect();
-    observer = null;
+    if (injectTimer) {
+        clearTimeout(injectTimer);
+        injectTimer = null;
+    }
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
     document.querySelectorAll(`#${BUTTONS_ID}`).forEach(el => el.remove());
 }
 
@@ -431,16 +489,10 @@ export default definePlugin({
 
     patches: [
         {
-            find: "toBinary(t).length>762880",
-            replacement: {
-                match: /\.toBinary\(t\)\.length>762880/,
-                replace: ".toBinary(t).length>Number.MAX_SAFE_INTEGER",
-            }
-        },
-        {
             find: "toBinary(t).length>",
+            noWarn: true,
             replacement: {
-                match: /\.toBinary\(t\)\.length>\d+/,
+                match: /\.toBinary\(\i\)\.length>\d+/,
                 replace: ".toBinary(t).length>Number.MAX_SAFE_INTEGER",
             }
         },
@@ -483,6 +535,7 @@ export default definePlugin({
         try {
             UserSettingsActionCreators?.FrecencyUserSettingsActionCreators?.loadIfNecessary?.();
         } catch { }
+        if (settings.store.runtimeUnlock) applyRuntimeUnlock();
         startObserver();
     },
 

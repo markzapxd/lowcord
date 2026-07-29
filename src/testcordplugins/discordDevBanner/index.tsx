@@ -5,9 +5,8 @@
  */
 
 import { definePluginSettings, migratePluginSettings } from "@api/Settings";
-import {TestcordDevs} from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
-
 
 const settings = definePluginSettings({
     removeCloseButton: {
@@ -21,7 +20,6 @@ const settings = definePluginSettings({
         disabled: () => true
     }
 });
-
 
 // By default Discord only seems too displays 'Staging' so we map the names ourself
 const names: Record<string, string> = {
@@ -74,7 +72,3 @@ export default definePlugin({
         }
     },
 });
-
-
-
-

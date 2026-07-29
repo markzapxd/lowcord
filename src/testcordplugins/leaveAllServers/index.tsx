@@ -1,16 +1,18 @@
 /*
- * Nightcord — LeaveAllServers plugin
- * Accessible via right-click on a server → "Leave All Servers"
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
+
+import "./styles.css";
 
 import { addContextMenuPatch, NavContextMenuPatchCallback, removeContextMenuPatch } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
+import { sleep } from "@utils/misc";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, openModal } from "@utils/modal";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByProps, findByPropsLazy, findStoreLazy } from "@webpack";
 import { Forms, Menu, React, showToast, Toasts, useEffect, useMemo, useState } from "@webpack/common";
-
-import "./styles.css";
 
 const GuildStore = findStoreLazy("GuildStore");
 const GuildActions = findByPropsLazy("leaveGuild");
@@ -100,7 +102,7 @@ function LeaveAllServersModal({ rootProps }: { rootProps: any; }) {
             } catch (e) {
                 console.error(`[LeaveAllServers] Failed to leave ${guild.name}:`, e);
             }
-            await new Promise(r => setTimeout(r, 800));
+            await sleep(800);
         }
 
         setStatus("done");

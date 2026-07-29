@@ -20,6 +20,13 @@ import { TagSettings } from "./types";
 
 const cl = classNameFactory("vc-mut-");
 
+const permCache = new Map<string, bigint>();
+const MAX_CACHE = 500;
+
+function cacheKey(userId: string, guildId: string): string {
+    return `${userId}:${guildId}`;
+}
+
 const genTagTypes = () => {
     let i = 100;
     const obj = {};
@@ -103,7 +110,7 @@ export default definePlugin({
     renderMessageDecoration(props) {
         const tagId = this.getTag({
             message: props.message,
-            user: UserStore.getUser(props.message.author.id),
+            user: props.message.author,
             channelId: props.message.channel_id,
             isChat: true
         });
@@ -179,7 +186,7 @@ export default definePlugin({
                 continue;
 
             if ("permissions" in tag ?
-                tag.permissions.some(perm => perms.includes(perm)) :
+                tag.permissions.some(perm => (perms & PermissionsBits[perm as keyof typeof PermissionsBits]) !== 0n) :
                 tag.condition(message!, user, channel)) {
 
                 return this.localTags[tag.name];
@@ -188,15 +195,18 @@ export default definePlugin({
 
         return null;
     },
-    getPermissions(user: User, channel: Channel): string[] {
+    getPermissions(user: User, channel: Channel): bigint {
         const guild = GuildStore.getGuild(channel?.guild_id);
-        if (!guild) return [];
-
-        const permissions = computePermissions({ user, context: guild, overwrites: channel.permissionOverwrites });
-        return Object.entries(PermissionsBits)
-            .map(([perm, permInt]) =>
-                permissions & permInt ? perm : ""
-            )
-            .filter(Boolean);
+        if (!guild) return 0n;
+        const key = cacheKey(user.id, guild.id);
+        const cached = permCache.get(key);
+        if (cached !== undefined) return cached;
+        const perms = computePermissions({ user, context: guild, overwrites: channel.permissionOverwrites });
+        if (permCache.size >= MAX_CACHE) {
+            const first = permCache.keys().next().value;
+            if (first !== undefined) permCache.delete(first);
+        }
+        permCache.set(key, perms);
+        return perms;
     },
 });

@@ -1,16 +1,31 @@
-import definePlugin, { OptionType } from "@utils/types";
-import { TestcordDevs } from "@utils/constants";
-import { Toasts, FluxDispatcher, UserStore, GuildStore, GuildMemberStore } from "@webpack/common";
-import { definePluginSettings } from "@api/Settings";
-import { findStoreLazy } from "@webpack";
-import { Menu, RestAPI, React, Button, TextInput, ChannelStore, PermissionStore, Forms, GuildChannelStore } from "@webpack/common";
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
-import { ModalContent, ModalFooter, ModalHeader, ModalRoot, openModal, ModalSize } from "@utils/modal";
+import { definePluginSettings } from "@api/Settings";
+import { TestcordDevs } from "@utils/constants";
+import { ModalContent, ModalFooter, ModalHeader, ModalRoot, ModalSize,openModal } from "@utils/modal";
+import definePlugin, { OptionType } from "@utils/types";
+import { findStoreLazy } from "@webpack";
+import { Button, ChannelStore, FluxDispatcher, Forms, GuildMemberStore,GuildStore, Menu, React, RestAPI, TextInput, Toasts, UserStore } from "@webpack/common";
 
 const VoiceStateStore = findStoreLazy("VoiceStateStore");
 let isCurrentlyVcOwner = false;
 let currentVcChannel: string | null = null;
 let currentVcGuild: string | null = null;
+let pluginActive = false;
+const pendingTimeouts = new Set<ReturnType<typeof setTimeout>>();
+
+function scheduleTimeout(callback: () => void, ms: number) {
+    const timeout = setTimeout(() => {
+        pendingTimeouts.delete(timeout);
+        if (pluginActive) callback();
+    }, ms);
+    pendingTimeouts.add(timeout);
+}
 
 const settings = definePluginSettings({
     users: {
@@ -218,7 +233,7 @@ function banAllUsersInCurrentVc(): void {
         return;
     }
 
-    const currentBannedUsers = settings.store.users.split('/').filter(item => item !== '');
+    const currentBannedUsers = settings.store.users.split("/").filter(item => item !== "");
     const newUsers = usersInVc.filter(userId => !currentBannedUsers.includes(userId));
 
     if (newUsers.length === 0) {
@@ -231,7 +246,7 @@ function banAllUsersInCurrentVc(): void {
     }
 
     const allBannedUsers = [...currentBannedUsers, ...newUsers];
-    settings.store.users = allBannedUsers.join('/');
+    settings.store.users = allBannedUsers.join("/");
 
     Toasts.show({
         message: `Added ${newUsers.length} users to auto-ban list`,
@@ -245,7 +260,7 @@ function banAllUsersInCurrentVc(): void {
         const channel = ChannelStore.getChannel(currentVoiceState.channelId);
         if (channel?.guild_id && forceCheckVcOwnership(channel.guild_id, currentVoiceState.channelId)) {
             newUsers.forEach((userId, index) => {
-                setTimeout(() => banninguser(userId), (index + 1) * Math.random() * 1000);
+                scheduleTimeout(() => banninguser(userId), (index + 1) * Math.random() * 1000);
             });
         }
     }
@@ -254,11 +269,39 @@ function banAllUsersInCurrentVc(): void {
 function makeUserContextMenuPatch(): NavContextMenuPatchCallback {
     return (children, props) => {
         if (!props) return;
+        const id = props.user.id;
+        if (UserStore.getCurrentUser().id === id) return;
 
-        const ban = MenuItem(props.user.id);
-        if (ban) {
-            children.splice(-1, 0, <Menu.MenuGroup>{ban}</Menu.MenuGroup>);
-        }
+        const isChecked = settings.store.users.split("/").filter(item => item !== "").includes(id);
+        children.splice(-1, 0,
+            <Menu.MenuGroup>
+                <Menu.MenuCheckboxItem
+                    id="auto-ban"
+                    label="Auto-Ban"
+                    checked={isChecked}
+                    action={async () => {
+                        openModal(props => <EncModals {...props} userId={id} />);
+                        const updatedList = [...settings.store.users.split("/").filter(item => item !== "")];
+                        const index = updatedList.indexOf(id);
+                        const wasAdded = index === -1;
+
+                        if (index === -1) updatedList.push(id);
+                        else updatedList.splice(index, 1);
+                        settings.store.users = updatedList.join("/");
+
+                        if (wasAdded) {
+                            banninguser(id);
+                        } else {
+                            Toasts.show({
+                                message: `Removed ${id} from Auto-Ban List`,
+                                type: Toasts.Type.MESSAGE,
+                                options: { position: Toasts.Position.BOTTOM }
+                            });
+                        }
+                    }}
+                />
+            </Menu.MenuGroup>
+        );
     };
 }
 
@@ -308,38 +351,7 @@ function BulkAutoBanSubmenu() {
     );
 }
 
-function MenuItem(id: string) {
-    if (UserStore.getCurrentUser().id === id) return;
-    const [isChecked, setIsChecked] = React.useState(settings.store.users.split('/').filter(item => item !== '').includes(id));
-    return (
-        <Menu.MenuCheckboxItem
-            id="auto-ban"
-            label="Auto-Ban"
-            checked={isChecked}
-            action={async () => {
-                openModal(props => <EncModals {...props} userId={id} />);
-                const updatedList = [...settings.store.users.split('/').filter(item => item !== '')];
-                const index = updatedList.indexOf(id);
-                const wasAdded = index === -1;
 
-                if (index === -1) updatedList.push(id);
-                else updatedList.splice(index, 1);
-                setIsChecked(!isChecked);
-                settings.store.users = updatedList.join("/");
-
-                if (wasAdded) {
-                    banninguser(id);
-                } else {
-                    Toasts.show({
-                        message: `Removed ${id} from Auto-Ban List`,
-                        type: Toasts.Type.MESSAGE,
-                        options: { position: Toasts.Position.BOTTOM }
-                    });
-                }
-            }}
-        />
-    );
-}
 
 function banninguser(id) {
     const currentUserId = UserStore.getCurrentUser().id;
@@ -399,7 +411,7 @@ function banninguser(id) {
         options: { position: Toasts.Position.BOTTOM }
     });
 
-    setTimeout(() => {
+    scheduleTimeout(() => {
         RestAPI.post({
             url: `/channels/${channelId}/messages`,
             body: { content: `!voice-ban ${id}`, nonce: (Math.floor(Math.random() * 10000000000000)) }
@@ -409,7 +421,7 @@ function banninguser(id) {
 
 function checkExistingUsersInVC(channelId: string) {
     const voiceStates = VoiceStateStore.getVoiceStatesForChannel(channelId) ?? {};
-    const bannedUsers = settings.store.users.split('/').filter(item => item !== '');
+    const bannedUsers = settings.store.users.split("/").filter(item => item !== "");
     const currentUserId = UserStore.getCurrentUser().id;
 
     if (!Object.keys(voiceStates).includes(currentUserId)) return;
@@ -426,7 +438,7 @@ function checkExistingUsersInVC(channelId: string) {
             options: { position: Toasts.Position.BOTTOM }
         });
 
-        setTimeout(() => {
+        scheduleTimeout(() => {
             RestAPI.post({
                 url: `/channels/${channelId}/messages`,
                 body: { content: `!voice-ban ${userId}`, nonce: (Math.floor(Math.random() * 10000000000000)) }
@@ -437,9 +449,9 @@ function checkExistingUsersInVC(channelId: string) {
 
 function EncModals(props) {
     const { userId } = props;
-    const currentReasons = settings.store.store.split('.').filter(Boolean);
+    const currentReasons = settings.store.store.split(".").filter(Boolean);
     const existingReasonEntry = currentReasons.find(entry => entry.startsWith(`${userId}/`));
-    const existingReason = existingReasonEntry ? existingReasonEntry.split('/')[1] : "";
+    const existingReason = existingReasonEntry ? existingReasonEntry.split("/")[1] : "";
     const [reason, setReason] = React.useState(existingReason);
 
     return (
@@ -491,23 +503,27 @@ export default definePlugin({
         "channel-context": makeChannelContextMenuPatch()
     },
     start() {
+        pluginActive = true;
         FluxDispatcher.subscribe("VOICE_STATE_UPDATES", cb);
         this.vcOwnershipInterval = setInterval(checkVcOwnershipStatus, 1500);
-        setTimeout(() => {
+        scheduleTimeout(() => {
             checkVcOwnershipStatus();
             forceCheckVcOwnership();
         }, 1000);
     },
 
     stop() {
+        pluginActive = false;
         FluxDispatcher.unsubscribe("VOICE_STATE_UPDATES", cb);
         if (this.vcOwnershipInterval) {
             clearInterval(this.vcOwnershipInterval);
         }
+        for (const timeout of pendingTimeouts) clearTimeout(timeout);
+        pendingTimeouts.clear();
     }
 });
 
-const cb = async (e) => {
+const cb = async e => {
     const state = e.voiceStates[0];
     if (!state?.channelId) return;
 
@@ -517,7 +533,7 @@ const cb = async (e) => {
     // Handle current user VC changes
     if (state.userId === currentUserId) {
         if (state?.channelId !== state?.oldChannelId && state?.channelId) {
-            setTimeout(() => {
+            scheduleTimeout(() => {
                 const channel = ChannelStore.getChannel(state.channelId);
                 if (channel?.guild_id) {
                     forceCheckVcOwnership(channel.guild_id, state.channelId);
@@ -535,10 +551,10 @@ const cb = async (e) => {
     }
 
     // Handle other users joining
-    if (state?.channelId == state?.oldChannelId) return;
+    if (state?.channelId === state?.oldChannelId) return;
     if (!Object.keys(Cvcstates).includes(currentUserId)) return;
 
-    if (state?.channelId && settings.store.users.split('/').filter(item => item !== '').includes(state.userId)) {
+    if (state?.channelId && settings.store.users.split("/").filter(item => item !== "").includes(state.userId)) {
         const channel = ChannelStore.getChannel(state.channelId);
         if (!channel?.guild_id) return;
 
@@ -559,7 +575,7 @@ const cb = async (e) => {
             options: { position: Toasts.Position.BOTTOM }
         });
 
-        setTimeout(() => {
+        scheduleTimeout(() => {
             RestAPI.post({
                 url: `/channels/${state.channelId}/messages`,
                 body: { content: `!voice-ban ${state.userId}`, nonce: (Math.floor(Math.random() * 10000000000000)) }

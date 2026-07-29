@@ -20,11 +20,10 @@ import { classNameFactory } from "@utils/index";
 import definePlugin, { OptionType } from "@utils/types";
 import { GuildMember, Message, RenderModalProps, User } from "@vencord/discord-types";
 import { findByCodeLazy, findStoreLazy } from "@webpack";
-import { ChannelStore, GuildMemberStore, GuildStore, Menu, MessageStore, Modal, openModal, RelationshipStore, StreamerModeStore, TextInput, useEffect, useMemo, useState } from "@webpack/common";
+import { ChannelStore, GuildMemberStore, GuildStore, Menu, MessageStore, Modal, openModal, RelationshipStore, StreamerModeStore, TextInput, useMemo, UserStore, useState } from "@webpack/common";
 import { JSX } from "react";
 
 const SMYNC = classNameFactory();
-const UserStore = findStoreLazy("UserStore");
 const wrapEmojis = findByCodeLazy("lastIndex;return");
 const adjustColor = findByCodeLazy("light1", '.get("hsl.s"))');
 const AccessibilityStore = findStoreLazy("AccessibilityStore");
@@ -106,6 +105,17 @@ function validColor(color: string) {
     return !!toCSS(color);
 }
 
+const baseNormalStyle = { "isolation": "isolate" as const };
+const baseGradientStyle = {
+    "background-clip": "text",
+    "background-size": "100px auto",
+    "-webkit-text-fill-color": "transparent",
+    "-webkit-background-clip": "text",
+    "isolation": "isolate"
+};
+
+let cachedDefaultColor: string | null = null;
+
 function resolveColor(
     colorStrings: colorStringsType,
     displayNameStyles: { effectId: number; colors: number[]; } | null | undefined,
@@ -115,9 +125,12 @@ function resolveColor(
     ircColorsEnabled: boolean,
     isHovering: boolean,
 ): Record<string, any> | null {
-    const defaultColor = getComputedStyle(document.documentElement).getPropertyValue("--text-strong").trim() || null;
-
-    if (!defaultColor) { return null; }
+    let defaultColor = cachedDefaultColor;
+    if (defaultColor === null) {
+        defaultColor = getComputedStyle(document.documentElement).getPropertyValue("--text-strong").trim() || null;
+        cachedDefaultColor = defaultColor;
+    }
+    if (!defaultColor) return null;
 
     savedColor = savedColor.trim() || defaultColor;
     const isRoleColor = savedColor.toLowerCase().includes("role");
@@ -152,18 +165,6 @@ function resolveColor(
         : tertiaryColor
             ? "linear-gradient(to right,var(--custom-gradient-color-1),var(--custom-gradient-color-2),var(--custom-gradient-color-3),var(--custom-gradient-color-1))"
             : "linear-gradient(to right,var(--custom-gradient-color-1),var(--custom-gradient-color-2),var(--custom-gradient-color-1))";
-
-    const baseNormalStyle = {
-        "isolation": "isolate"
-    };
-
-    const baseGradientStyle = {
-        "background-clip": "text",
-        "background-size": "100px auto",
-        "-webkit-text-fill-color": "transparent",
-        "-webkit-background-clip": "text",
-        "isolation": "isolate"
-    };
 
     return {
         normal: {
@@ -205,20 +206,32 @@ function resolveColor(
     };
 }
 
+let cachedTemplate = "";
+let cachedSplitResult: string[] = [];
+
 function splitTemplate(template: string) {
-    const items = template.trim().split(/(?<!,\s*)\s+/);
-    return items;
+    if (template === cachedTemplate) return cachedSplitResult;
+    cachedTemplate = template;
+    cachedSplitResult = template.trim().split(/(?<!,\s*)\s+/);
+    return cachedSplitResult;
 }
 
+const parseTemplateCache = new Map<string, ReturnType<typeof parseTemplateItem>>();
+
 function parseTemplateItem(entry: string) {
+    const cached = parseTemplateCache.get(entry);
+    if (cached) return cached;
+
     const [prefix, suffix] = entry.split(templatePattern);
     const names = entry.replace(prefix, "").replace(suffix, "").trim().replaceAll(/{|}/g, "").split(/,\s*/);
 
-    return {
+    const result = {
         prefix: prefix ? prefix.trim() : "",
         suffix: suffix ? suffix.trim() : "",
         targetProcessedNames: names.map(name => name.trim()).filter(name => name.length > 0)
     };
+    parseTemplateCache.set(entry, result);
+    return result;
 }
 
 function validTemplate(value: string) {
@@ -505,13 +518,18 @@ function renderUsername(
 
     const textMutedValue = hookless
         ? getComputedStyle(document.documentElement)?.getPropertyValue("--text-muted")?.trim() || "#72767d"
-        : useMemo(() => getComputedStyle(document.documentElement)?.getPropertyValue("--text-muted")?.trim() || "#72767d", [triggerNameRerender]);
+        : useMemo(() => getComputedStyle(document.documentElement)?.getPropertyValue("--text-muted")?.trim() || "#72767d", []);
     const options = splitTemplate(includedNames);
-    const resolvedUsernameColor = author ? resolveColor(authorColorStrings, authorDisplayNameStyles, usernameColor.trim(), canUseGradient, inGuild, ircColorsEnabled, isHovering) : null;
-    const resolvedDisplayNameColor = author ? resolveColor(authorColorStrings, authorDisplayNameStyles, displayNameColor.trim(), canUseGradient, inGuild, ircColorsEnabled, isHovering) : null;
-    const resolvedNicknameColor = author ? resolveColor(authorColorStrings, authorDisplayNameStyles, nicknameColor.trim(), canUseGradient, inGuild, ircColorsEnabled, isHovering) : null;
-    const resolvedFriendNameColor = author ? resolveColor(authorColorStrings, authorDisplayNameStyles, friendNameColor.trim(), canUseGradient, inGuild, ircColorsEnabled, isHovering) : null;
-    const resolvedCustomNameColor = author ? resolveColor(authorColorStrings, authorDisplayNameStyles, customNameColor.trim(), canUseGradient, inGuild, ircColorsEnabled, isHovering) : null;
+
+    // Deduplicate resolveColor calls: if multiple colors have the same value, call once
+    const _r = (c: string) => author ? resolveColor(authorColorStrings, authorDisplayNameStyles, c.trim(), canUseGradient, inGuild, ircColorsEnabled, isHovering) : null;
+    const _colorCache = new Map<string, ReturnType<typeof _r>>();
+    const _rc = (c: string) => { const k = c.trim(); if (!_colorCache.has(k)) _colorCache.set(k, _r(k)); return _colorCache.get(k)!; };
+    const resolvedUsernameColor = _rc(usernameColor);
+    const resolvedDisplayNameColor = _rc(displayNameColor);
+    const resolvedNicknameColor = _rc(nicknameColor);
+    const resolvedFriendNameColor = _rc(friendNameColor);
+    const resolvedCustomNameColor = _rc(customNameColor);
     const affixColor = { color: textMutedValue, "-webkit-text-fill-color": textMutedValue, isolation: "isolate", "white-space": "pre", "font-family": "var(--font-primary)", "letter-spacing": "normal" };
     const { username, display, nick, friend, custom } = getProcessedNames(author, truncateAllNamesWithStreamerMode, discriminators, inGuild, friendNameOnlyInDirectMessages, customNameOnlyInDirectMessages);
 
@@ -776,21 +794,20 @@ function handleHoveringMessage(message: any, isHovering: boolean) {
     const repliedId = message?.messageReference?.message_id;
     const groupId = message?.showMeYourNameGroupId ?? "";
 
+    const shouldTrack = settings.store.animateGradients || settings.store.alwaysShowEffects;
     const effectiveIsHovering = settings.store.alwaysShowEffects || isHovering;
 
-    useEffect(() => {
-        if (!message) return;
+    if (!message || !shouldTrack) return;
 
-        if (effectiveIsHovering) {
-            addHoveringMessage(messageId);
-            addHoveringMessage(groupId);
-            addHoveringReply(repliedId);
-        } else {
-            removeHoveringMessage(messageId);
-            removeHoveringMessage(groupId);
-            removeHoveringReply(repliedId);
-        }
-    }, [messageId, groupId, effectiveIsHovering]);
+    if (effectiveIsHovering) {
+        addHoveringMessage(messageId);
+        addHoveringMessage(groupId);
+        addHoveringReply(repliedId);
+    } else {
+        removeHoveringMessage(messageId);
+        removeHoveringMessage(groupId);
+        removeHoveringReply(repliedId);
+    }
 }
 
 function addHoveringMessage(id: string) {
@@ -1085,7 +1102,10 @@ export default definePlugin({
     isModified: true,
     settings,
 
-    UserStore,
+    // Read through a getter, not a plain value. Capturing the store in the object literal
+    // resolved it at module-eval time, before webpack was ready, and the patch below then
+    // called getUser on whatever that came back as.
+    get UserStore() { return UserStore; },
 
     patches: [
         {
@@ -1131,7 +1151,7 @@ export default definePlugin({
         {
             // Don't block name style in friends list just
             // because the name is the same as the username.
-            find: "location:\"DiscordTag\"});",
+            find: 'location:"DiscordTag"})',
             replacement: {
                 match: /(?<=,forceUsername:(\i),.*?displayNameStyles:)\i!==\i\?(\i.displayNameStyles):null/,
                 replace: "!$1?$2:null"
@@ -1141,7 +1161,7 @@ export default definePlugin({
             // Replace name in solo DM title bar and tooltip.
             find: "channel.isSystemDM(),",
             replacement: {
-                match: /(?<=length>0,)(\i=)(.{0,280}?"aria-label":)(\i.\i.getName\(\i\).{0,400}?text:)/,
+                match: /(?<=length>0,\i=\i&&null!=\i&&!\i,)(\i=)(.{0,125}?"aria-label":)(\i.\i.getName\(\i\).{0,1700}?text:)(?=\i,position)/,
                 replace: "smynName=arguments[0].channel.recipients.length===1?$self.getTypingMemberListProfilesReactionsVoiceNameText({user:$self.UserStore.getUser(arguments[0].channel.recipients[0]),type:\"profilesPopout\"})??null:null,$1smynName??$2smynName??$3smynName??"
             },
         },
@@ -1161,12 +1181,14 @@ export default definePlugin({
             find: ".USER_MENTION)",
             replacement: [
                 {
-                    match: /(let \i=\i=>\(0,)/,
-                    replace: "const showMeYourNameMention=$self.getMentionNameElement(arguments[0]);$1"
+                    match: /(?=function \i\(\i\){return\(0)/,
+                    replace: "const showMeYourNameMention=$self.getMentionNameElement(arguments[0]);"
                 },
                 {
                     match: /(?<=onContextMenu:\i,\.\.\.\i,children:)/,
-                    replace: "showMeYourNameMention??",
+                    // ponytail: typeof guard — if declaration #1 stops matching (bundle drift),
+                    // this falls through to the original render instead of ReferenceError-crashing.
+                    replace: "(typeof showMeYourNameMention!==\"undefined\"?showMeYourNameMention:void 0)??",
                     predicate: () => !isPluginEnabled(mentionAvatars.name),
                 }
             ]
@@ -1221,22 +1243,6 @@ export default definePlugin({
             }
         },
         {
-            find: ".MESSAGE,userId:",
-            group: true,
-            replacement: [
-                {
-                    // Track hovering over reaction popouts.
-                    match: /(?<=\(0,\i.\i\)\(\i.\i,{className:\i.\i,)(?=(?:align:\i\.\i\.\i\.CENTER|onContextMenu:\i=>))/g,
-                    replace: "onMouseEnter:()=>{$self.addHoveringReactionPopout(arguments[0].user.id)},onMouseLeave:()=>{$self.removeHoveringReactionPopout(arguments[0].user.id)},"
-                },
-                {
-                    // Replace names in reaction popouts.
-                    match: /(?<=Child,{className:\i.\i,children:)/g,
-                    replace: "($self.getTypingMemberListProfilesReactionsVoiceNameElement({user:arguments[0].user,guildId:arguments[0].guildId,type:\"reactionsPopout\"}))??"
-                }
-            ]
-        },
-        {
             // Replace names in voice channels.
             find: ",connectUserDragSource:",
             replacement: {
@@ -1266,6 +1272,10 @@ export default definePlugin({
         convertToRGBCache = null;
         convertToRGBCanvas = null;
         convertToRGBCtx = null;
+        parseTemplateCache.clear();
+        cachedTemplate = "";
+        cachedSplitResult = [];
+        cachedDefaultColor = null;
     },
 
     contextMenus: {

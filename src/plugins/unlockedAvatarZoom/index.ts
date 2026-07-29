@@ -25,7 +25,8 @@ export default definePlugin({
     settings,
     patches: [
         {
-            find: "#{intl::AVATAR_UPLOAD_EDIT_MEDIA}",
+            find: "changeAvatarButtonText",
+            noWarn: true,
             replacement: {
                 match: /maxValue:\d/,
                 replace: "maxValue:$self.settings.store.zoomMultiplier",

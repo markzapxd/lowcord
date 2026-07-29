@@ -9,31 +9,49 @@ import { showNotification } from "@api/Notifications";
 import { definePluginSettings } from "@api/Settings";
 import { LogIcon } from "@components/Icons";
 import SettingsPlugin from "@plugins/_core/settings";
+import { EquicordDevs, TestcordDevs } from "@utils/constants";
 import { removeFromArray } from "@utils/misc";
+import { formatDurationMs } from "@utils/text";
 import definePlugin, { OptionType } from "@utils/types";
 import type { Activity, Channel, Guild, GuildMember, Message, OnlineStatus, Role, User } from "@vencord/discord-types";
 import { ActivityType } from "@vencord/discord-types/enums";
-import { ChannelStore, GuildStore, Menu, PresenceStore, SettingsRouter, UserStore } from "@webpack/common";
+import { ChannelStore, GuildStore, IconUtils, Menu, PresenceStore, SettingsRouter, UserStore, VoiceStateStore } from "@webpack/common";
 
 import { recordEvent, trimEvents } from "./store";
-import type { MessageSnapshot, SurveillanceEvent, SurveillanceEventType, SurveillanceScope, VoiceState, VoiceStateFlag } from "./types";
+import type { IdentityHistoryEntry, MessageAttachmentSnapshot, MessageSnapshot, SurveillanceEvent, SurveillanceEventType, SurveillanceScope, VoiceParticipantSnapshot, VoiceState, VoiceStateFlag } from "./types";
 
 const SETTINGS_ENTRY_KEY = "illegalcord_surveillance";
 const NOTIFICATION_COLOR = "#5865f2";
 const MESSAGE_PREVIEW_LIMIT = 220;
 const TYPING_COOLDOWN = 15_000;
 const MEMBER_JOIN_FRESHNESS = 300_000;
+const URL_REGEX = /https?:\/\/[^\s<>)"']+/gi;
+const IDENTITY_HISTORY_LIMIT = 24;
 
 let targets: string[] = [];
 let serverTargets: string[] = [];
 const targetListeners = new Set<() => void>();
 const serverTargetListeners = new Set<() => void>();
 const messageCache = new Map<string, MessageSnapshot>();
+const MESSAGE_CACHE_LIMIT = 2000;
 const previousVoiceStates = new Map<string, VoiceState>();
+const voiceSessions = new Map<string, { channelId: string; startedAt: number; }>();
 const typingCooldowns = new Map<string, number>();
 const seenServerUsers = new Map<string, Set<string>>();
 let lastStatuses = new Map<string, OnlineStatus>();
 let lastActivities = new Map<string, Map<string, string>>();
+const userCoreProfiles = new Map<string, ProfileSnapshot>();
+const userDetailProfiles = new Map<string, ProfileSnapshot>();
+const guildMemberProfiles = new Map<string, ProfileSnapshot>();
+const identityHistories = new Map<string, IdentityHistoryEntry[]>();
+
+type ProfileValue = string | number | boolean | null;
+type ProfileSnapshot = Record<string, ProfileValue>;
+type IdentityField = "avatar" | "banner" | "bio" | "display name" | "pronouns" | "server display name" | "username";
+type MessageAttachmentLike = Message["attachments"][number] & {
+    contentType?: string;
+    proxyUrl?: string;
+};
 
 interface UserContextProps {
     user?: User;
@@ -70,6 +88,24 @@ interface RoleFluxEvent {
     guild_id?: string;
     role?: Role;
     roleId?: string;
+}
+
+interface UserUpdateFluxEvent {
+    user?: User;
+}
+
+interface UserProfileFluxEvent {
+    userProfile?: unknown;
+    profile?: unknown;
+    user?: User;
+}
+
+interface GuildMemberProfileFluxEvent {
+    guildId?: string;
+    guild_id?: string;
+    guildMember?: GuildMember;
+    member?: GuildMember;
+    user?: User;
 }
 
 interface ReactionEmoji {
@@ -207,10 +243,20 @@ export const settings = definePluginSettings({
         default: true,
         description: "Log activity starts, stops, and updates.",
     },
+    logProfileChanges: {
+        type: OptionType.BOOLEAN,
+        default: true,
+        description: "Log profile changes like display name, avatar, bio, pronouns, and server profile updates.",
+    },
     logVoice: {
         type: OptionType.BOOLEAN,
         default: true,
         description: "Log voice joins, leaves, moves, and state changes.",
+    },
+    logVoiceChannelMembers: {
+        type: OptionType.BOOLEAN,
+        default: true,
+        description: "Include other visible voice channel members on voice events.",
     },
     logMemberUpdates: {
         type: OptionType.BOOLEAN,
@@ -221,6 +267,11 @@ export const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         default: false,
         description: "Send notifications for high signal surveillance events.",
+    },
+    enableOsintAnalysis: {
+        type: OptionType.BOOLEAN,
+        default: false,
+        description: "Enable OSINT-style analysis of surveillance activity patterns, timings, and behavioral profiles.",
     },
     trackSelf: {
         type: OptionType.BOOLEAN,
@@ -239,12 +290,45 @@ const makeId = () =>
     `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 const getUsername = (userId: string, fallback?: string) =>
-    fallback ?? UserStore.getUser(userId)?.username ?? userId;
+    fallback ?? UserStore.getUser(userId)?.globalName ?? UserStore.getUser(userId)?.username ?? userId;
+
+const getAvatarUrl = (userId: string, user?: User) => {
+    const targetUser = user ?? UserStore.getUser(userId);
+    return targetUser ? IconUtils.getUserAvatarURL(targetUser, true, 64) : undefined;
+};
 
 const preview = (content: string) =>
     content.length > MESSAGE_PREVIEW_LIMIT
         ? `${content.slice(0, MESSAGE_PREVIEW_LIMIT)}...`
         : content;
+
+const formatDurationLabel = (durationMs: number) =>
+    formatDurationMs(durationMs, true);
+
+const getMessageLinks = (content: string) =>
+    [...new Set((content.match(URL_REGEX) ?? []).map(link => link.replace(/[.,!?;:]+$/, "")))];
+
+const getAttachmentContentType = (attachment: MessageAttachmentLike) =>
+    attachment.content_type ?? attachment.contentType;
+
+const getAttachmentProxyUrl = (attachment: MessageAttachmentLike) =>
+    attachment.proxy_url ?? attachment.proxyUrl;
+
+const getMessageAttachments = (message: Message): MessageAttachmentSnapshot[] | undefined => {
+    const attachments = message.attachments.map(attachment => ({
+        id: attachment.id,
+        filename: attachment.filename,
+        url: attachment.url,
+        proxyUrl: getAttachmentProxyUrl(attachment),
+        contentType: getAttachmentContentType(attachment),
+        size: attachment.size,
+        width: attachment.width,
+        height: attachment.height,
+        spoiler: attachment.spoiler,
+    }));
+
+    return attachments.length ? attachments : undefined;
+};
 
 const isCurrentUser = (userId: string) =>
     userId === UserStore.getCurrentUser()?.id;
@@ -384,6 +468,7 @@ const addUserEvent = (type: SurveillanceEventType, userId: string, details: stri
         userId,
         username: getUsername(userId, extra.username),
         details,
+        avatarUrl: extra.avatarUrl ?? getAvatarUrl(userId),
         scope,
         ...extra,
     });
@@ -444,6 +529,222 @@ const getActivityMap = (userId: string) => {
     return activityMap;
 };
 
+const isObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null;
+
+const readString = (source: Record<string, unknown>, key: string) => {
+    const value = source[key];
+    return typeof value === "string" ? value : undefined;
+};
+
+const stringifyProfileValue = (value: unknown): string | null => {
+    if (value == null) return null;
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+};
+
+const putProfileValue = (snapshot: ProfileSnapshot, label: string, value: unknown) => {
+    const formatted = stringifyProfileValue(value);
+    if (formatted != null) snapshot[label] = formatted;
+};
+
+const getProfileSource = (event: UserProfileFluxEvent) => {
+    const source = event.userProfile ?? event.profile ?? event.user;
+    return isObject(source) ? source : undefined;
+};
+
+const snapshotUser = (user: User) => {
+    const snapshot: ProfileSnapshot = {};
+
+    putProfileValue(snapshot, "username", user.username);
+    putProfileValue(snapshot, "display name", user.globalName);
+    putProfileValue(snapshot, "avatar", user.avatar);
+    putProfileValue(snapshot, "banner", user.banner);
+    putProfileValue(snapshot, "avatar decoration", user.avatarDecorationData);
+    putProfileValue(snapshot, "nameplate", user.nameplate);
+    putProfileValue(snapshot, "primary guild", user.primaryGuild);
+    putProfileValue(snapshot, "display name styles", user.displayNameStyles);
+
+    return snapshot;
+};
+
+const snapshotUserProfile = (source: Record<string, unknown>, user?: User) => {
+    const snapshot = user ? snapshotUser(user) : {};
+
+    putProfileValue(snapshot, "bio", source.bio);
+    putProfileValue(snapshot, "pronouns", source.pronouns);
+    putProfileValue(snapshot, "accent color", source.accentColor);
+    putProfileValue(snapshot, "theme colors", source.themeColors);
+    putProfileValue(snapshot, "profile effect", source.profileEffectId ?? source.profileEffect);
+    putProfileValue(snapshot, "profile effect expires at", source.profileEffectExpiresAt);
+    putProfileValue(snapshot, "badges", source.badges);
+    putProfileValue(snapshot, "collectibles", source.collectibles);
+    putProfileValue(snapshot, "connected accounts", source.connectedAccounts);
+    putProfileValue(snapshot, "application role connections", source.applicationRoleConnections);
+    putProfileValue(snapshot, "banner", source.banner ?? snapshot.banner);
+    putProfileValue(snapshot, "premium since", source.premiumSince);
+    putProfileValue(snapshot, "premium guild since", source.premiumGuildSince);
+    putProfileValue(snapshot, "legacy username", source.legacyUsername);
+
+    return snapshot;
+};
+
+const snapshotGuildMemberProfile = (member: GuildMember) => {
+    const snapshot: ProfileSnapshot = {};
+
+    putProfileValue(snapshot, "server display name", member.nick);
+    putProfileValue(snapshot, "server avatar", member.avatar);
+    putProfileValue(snapshot, "server avatar decoration", member.avatarDecoration);
+    putProfileValue(snapshot, "server profile loaded at", member.fullProfileLoadedTimestamp);
+    putProfileValue(snapshot, "server display name styles", member.displayNameStyles);
+    putProfileValue(snapshot, "color role", member.colorRoleId);
+    putProfileValue(snapshot, "role count", member.roles.length);
+
+    return snapshot;
+};
+
+const getChangedProfileFields = (previous: ProfileSnapshot | undefined, current: ProfileSnapshot) => {
+    if (!previous) return [];
+
+    const keys = new Set([...Object.keys(previous), ...Object.keys(current)]);
+    const changes: string[] = [];
+
+    for (const key of keys) {
+        const before = previous[key] ?? null;
+        const after = current[key] ?? null;
+
+        if (before !== after) changes.push(`${formatProfileLabel(key)} changed from ${formatProfileChangeValue(before)} to ${formatProfileChangeValue(after)}`);
+    }
+
+    return changes;
+};
+
+const identityFields = new Set<IdentityField>(["avatar", "banner", "bio", "display name", "pronouns", "server display name", "username"]);
+
+const getIdentityUpdates = (
+    previous: ProfileSnapshot | undefined,
+    current: ProfileSnapshot,
+    timestamp: number,
+    extra: Partial<SurveillanceEvent>
+) => {
+    if (!previous) return [];
+
+    const updates: IdentityHistoryEntry[] = [];
+
+    for (const field of identityFields) {
+        const before = previous[field] ?? null;
+        const after = current[field] ?? null;
+
+        if (before !== after) {
+            updates.push({
+                field: formatProfileLabel(field),
+                value: after == null || after === "" ? null : String(after),
+                timestamp,
+                guildId: extra.guildId,
+                guildName: extra.guildName,
+            });
+        }
+    }
+
+    return updates;
+};
+
+const pushIdentityHistory = (userId: string, updates: IdentityHistoryEntry[]) => {
+    if (!updates.length) return;
+
+    const next = [...(identityHistories.get(userId) ?? []), ...updates].slice(-IDENTITY_HISTORY_LIMIT);
+    identityHistories.set(userId, next);
+};
+
+const formatProfileLabel = (label: string) =>
+    label.replace(/^./, match => match.toUpperCase());
+
+const formatProfileChangeValue = (value: ProfileValue) =>
+    value == null || value === "" ? "unset" : String(value);
+
+const logProfileChanges = (
+    userId: string,
+    current: ProfileSnapshot,
+    store: Map<string, ProfileSnapshot>,
+    extra: Partial<SurveillanceEvent> = {}
+) => {
+    if (!settings.store.logProfileChanges) return;
+    if (shouldIgnoreUser(userId)) return;
+
+    const scope = extra.scope ?? getScope(userId, extra.guildId);
+    if (!scope) return;
+
+    const previous = store.get(userId);
+    const changes = getChangedProfileFields(previous, current);
+    const timestamp = Date.now();
+    const identityUpdates = getIdentityUpdates(previous, current, timestamp, extra);
+    store.set(userId, current);
+    if (!changes.length) return;
+
+    pushIdentityHistory(userId, identityUpdates);
+
+    addUserEvent("profile_update", userId, `Updated profile: ${changes.join("; ")}.`, {
+        scope,
+        avatarUrl: getAvatarUrl(userId),
+        after: changes.join("\n"),
+        identityHistory: identityHistories.get(userId),
+        ...extra,
+        metadata: {
+            ...(extra.metadata ?? {}),
+            changedFieldCount: changes.length,
+            identityFieldCount: identityUpdates.length,
+        },
+    });
+};
+
+const logUserUpdate = ({ user }: UserUpdateFluxEvent) => {
+    if (!user || !shouldTrackUser(user.id)) return;
+
+    logProfileChanges(user.id, snapshotUser(user), userCoreProfiles, {
+        username: getUsername(user.id, user.globalName ?? user.username),
+        avatarUrl: getAvatarUrl(user.id, user),
+    });
+};
+
+const logUserProfile = (event: UserProfileFluxEvent) => {
+    const source = getProfileSource(event);
+    if (!source) return;
+
+    const sourceUser = isObject(source.user) ? source.user : undefined;
+    const userId = readString(source, "userId") ?? readString(sourceUser ?? {}, "id") ?? event.user?.id;
+    if (!userId || !shouldTrackUser(userId)) return;
+
+    logProfileChanges(userId, snapshotUserProfile(source, event.user), userDetailProfiles, {
+        username: getUsername(userId, event.user?.globalName ?? event.user?.username),
+        avatarUrl: getAvatarUrl(userId, event.user),
+    });
+};
+
+const logGuildMemberProfile = (event: GuildMemberProfileFluxEvent) => {
+    const member = event.guildMember ?? event.member;
+    const guildId = event.guildId ?? event.guild_id ?? member?.guildId;
+    const userId = event.user?.id ?? member?.userId;
+    if (!member || !userId) return;
+    if (!shouldTrackEvent(userId, guildId)) return;
+
+    rememberServerUser(userId, guildId);
+
+    logProfileChanges(userId, snapshotGuildMemberProfile(member), guildMemberProfiles, {
+        username: getUsername(userId, event.user?.globalName ?? event.user?.username),
+        avatarUrl: getAvatarUrl(userId, event.user),
+        ...getGuildInfo(guildId),
+        metadata: {
+            serverProfile: true,
+        },
+    });
+};
+
 const seedPresence = () => {
     const statuses = PresenceStore.getState()?.statuses ?? {};
     lastStatuses = new Map();
@@ -469,7 +770,14 @@ const handlePresenceChange = () => {
         const currentStatus = statuses[userId] ?? "offline";
 
         if (settings.store.logStatus && previousStatus !== currentStatus) {
-            addUserEvent("status", userId, `Status changed from ${previousStatus} to ${currentStatus}.`, { scope, ...guildInfo });
+            addUserEvent("status", userId, `Status changed from ${previousStatus} to ${currentStatus}.`, {
+                scope,
+                ...guildInfo,
+                metadata: {
+                    from: previousStatus,
+                    to: currentStatus,
+                },
+            });
         }
 
         const previousActivities = lastActivities.get(userId) ?? new Map<string, string>();
@@ -480,17 +788,38 @@ const handlePresenceChange = () => {
                 const previousActivity = previousActivities.get(key);
 
                 if (!previousActivity) {
-                    addUserEvent("activity_start", userId, `Started ${activity}.`, { scope, ...guildInfo });
+                    addUserEvent("activity_start", userId, `Started ${activity}.`, {
+                        scope,
+                        ...guildInfo,
+                        metadata: {
+                            activity,
+                        },
+                    });
                     continue;
                 }
 
                 if (previousActivity !== activity) {
-                    addUserEvent("activity_update", userId, `Changed activity from ${previousActivity} to ${activity}.`, { scope, ...guildInfo });
+                    addUserEvent("activity_update", userId, `Changed activity from ${previousActivity} to ${activity}.`, {
+                        scope,
+                        ...guildInfo,
+                        metadata: {
+                            from: previousActivity,
+                            to: activity,
+                        },
+                    });
                 }
             }
 
             for (const [key, activity] of previousActivities) {
-                if (!currentActivities.has(key)) addUserEvent("activity_stop", userId, `Stopped ${activity}.`, { scope, ...guildInfo });
+                if (!currentActivities.has(key)) {
+                    addUserEvent("activity_stop", userId, `Stopped ${activity}.`, {
+                        scope,
+                        ...guildInfo,
+                        metadata: {
+                            activity,
+                        },
+                    });
+                }
             }
         }
 
@@ -512,6 +841,54 @@ const getVoiceChanges = (previousState: VoiceState, currentState: VoiceState) =>
     return changes;
 };
 
+const getVoiceParticipants = (channelId: string | undefined, actorUserId: string): VoiceParticipantSnapshot[] | undefined => {
+    if (!settings.store.logVoiceChannelMembers || !channelId) return;
+
+    const states = VoiceStateStore.getVoiceStatesForChannel(channelId) as Record<string, VoiceState> | undefined;
+    if (!states) return;
+
+    const participants = Object.values(states)
+        .filter(state => state.userId !== actorUserId)
+        .map(state => {
+            const user = UserStore.getUser(state.userId);
+
+            return {
+                userId: state.userId,
+                username: getUsername(state.userId),
+                tag: user?.tag ?? user?.username,
+                avatarUrl: getAvatarUrl(state.userId, user),
+                mute: Boolean(state.mute),
+                deaf: Boolean(state.deaf),
+                selfMute: Boolean(state.selfMute),
+                selfDeaf: Boolean(state.selfDeaf),
+                selfVideo: Boolean(state.selfVideo),
+                selfStream: Boolean(state.selfStream),
+                suppress: Boolean(state.suppress),
+            };
+        });
+
+    return participants.length ? participants : undefined;
+};
+
+const getVoiceMetadata = (state: VoiceState, channelId: string | undefined, durationMs?: number): SurveillanceEvent["metadata"] => ({
+    channelId: channelId ?? null,
+    mute: Boolean(state.mute),
+    deaf: Boolean(state.deaf),
+    selfMute: Boolean(state.selfMute),
+    selfDeaf: Boolean(state.selfDeaf),
+    selfVideo: Boolean(state.selfVideo),
+    selfStream: Boolean(state.selfStream),
+    suppress: Boolean(state.suppress),
+    durationMs: durationMs ?? null,
+});
+
+const getVoiceDuration = (userId: string, channelId: string | undefined) => {
+    const session = voiceSessions.get(userId);
+    if (!session || session.channelId !== channelId) return undefined;
+
+    return Date.now() - session.startedAt;
+};
+
 const handleVoiceState = (state: VoiceState) => {
     if (!settings.store.logVoice) return;
 
@@ -525,26 +902,50 @@ const handleVoiceState = (state: VoiceState) => {
     if (oldChannelId !== channelId) {
         if (!oldChannelId && channelId) {
             const channelInfo = getChannelInfo(channelId);
-            addUserEvent("voice_join", userId, `Joined voice channel ${channelInfo.channelName ?? "Unknown channel"}.`, channelInfo);
+            voiceSessions.set(userId, { channelId, startedAt: Date.now() });
+            addUserEvent("voice_join", userId, `Joined voice channel ${channelInfo.channelName ?? "Unknown channel"}.`, {
+                ...channelInfo,
+                voiceParticipants: getVoiceParticipants(channelId, userId),
+                metadata: getVoiceMetadata(state, channelId),
+            });
         } else if (oldChannelId && !channelId) {
             const channelInfo = getChannelInfo(oldChannelId);
-            addUserEvent("voice_leave", userId, `Left voice channel ${channelInfo.channelName ?? "Unknown channel"}.`, channelInfo);
+            const durationMs = getVoiceDuration(userId, oldChannelId);
+            voiceSessions.delete(userId);
+            addUserEvent("voice_leave", userId, `Left voice channel ${channelInfo.channelName ?? "Unknown channel"}${durationMs != null ? ` after ${formatDurationLabel(durationMs)}` : ""}.`, {
+                ...channelInfo,
+                voiceParticipants: getVoiceParticipants(oldChannelId, userId),
+                metadata: getVoiceMetadata(state, oldChannelId, durationMs),
+            });
         } else if (oldChannelId && channelId) {
             const oldChannel = getChannelInfo(oldChannelId).channelName ?? "Unknown channel";
             const channelInfo = getChannelInfo(channelId);
-            addUserEvent("voice_move", userId, `Moved from ${oldChannel} to ${channelInfo.channelName ?? "Unknown channel"}.`, channelInfo);
+            const durationMs = getVoiceDuration(userId, oldChannelId);
+            voiceSessions.set(userId, { channelId, startedAt: Date.now() });
+            addUserEvent("voice_move", userId, `Moved from ${oldChannel} to ${channelInfo.channelName ?? "Unknown channel"}${durationMs != null ? ` after ${formatDurationLabel(durationMs)}` : ""}.`, {
+                ...channelInfo,
+                voiceParticipants: getVoiceParticipants(channelId, userId),
+                metadata: getVoiceMetadata(state, channelId, durationMs),
+            });
         }
     }
 
     if (previousState && channelId && oldChannelId === channelId) {
         const changes = getVoiceChanges(previousState, state);
         if (changes.length) {
-            addUserEvent("voice_update", userId, `Voice state changed: ${changes.join(", ")}.`, getChannelInfo(channelId));
+            addUserEvent("voice_update", userId, `Voice state changed: ${changes.join(", ")}.`, {
+                ...getChannelInfo(channelId),
+                voiceParticipants: getVoiceParticipants(channelId, userId),
+                after: changes.join("\n"),
+                metadata: getVoiceMetadata(state, channelId),
+            });
         }
     }
 
-    if (channelId) previousVoiceStates.set(userId, state);
-    else previousVoiceStates.delete(userId);
+    if (channelId) {
+        previousVoiceStates.set(userId, state);
+        if (!voiceSessions.has(userId)) voiceSessions.set(userId, { channelId, startedAt: Date.now() });
+    } else previousVoiceStates.delete(userId);
 };
 
 const logMessage = (message: Message) => {
@@ -558,6 +959,8 @@ const logMessage = (message: Message) => {
     rememberServerUser(author.id, info.guildId);
 
     const content = settings.store.captureMessageContent ? preview(message.content) : undefined;
+    const attachments = getMessageAttachments(message);
+    const links = getMessageLinks(message.content);
 
     messageCache.set(message.id, {
         userId: author.id,
@@ -565,7 +968,13 @@ const logMessage = (message: Message) => {
         channelId: message.channel_id,
         guildId: info.guildId,
         content: message.content,
+        attachments,
+        links,
     });
+    if (messageCache.size > MESSAGE_CACHE_LIMIT) {
+        const oldest = messageCache.keys().next().value;
+        if (oldest !== undefined) messageCache.delete(oldest);
+    }
 
     if (!settings.store.logMessages) return;
 
@@ -576,11 +985,14 @@ const logMessage = (message: Message) => {
         details: content ? `Sent message: ${content}` : "Sent a message.",
         scope: getScope(author.id, info.guildId),
         content,
+        attachments,
+        links,
         ...info,
         metadata: {
             messageId: message.id,
             hasContent: message.content.length > 0,
             attachmentCount: message.attachments.length,
+            linkCount: links.length,
         },
     });
 };
@@ -598,6 +1010,8 @@ const logMessageUpdate = (message: Message) => {
 
     const content = settings.store.captureMessageContent ? preview(message.content) : undefined;
     const previousContent = previousMessage?.content;
+    const attachments = getMessageAttachments(message);
+    const links = getMessageLinks(message.content);
 
     messageCache.set(message.id, {
         userId: message.author.id,
@@ -605,7 +1019,13 @@ const logMessageUpdate = (message: Message) => {
         channelId: message.channel_id,
         guildId: info.guildId,
         content: message.content,
+        attachments,
+        links,
     });
+    if (messageCache.size > MESSAGE_CACHE_LIMIT) {
+        const oldest = messageCache.keys().next().value;
+        if (oldest !== undefined) messageCache.delete(oldest);
+    }
 
     addEvent({
         type: "message_edit",
@@ -615,10 +1035,14 @@ const logMessageUpdate = (message: Message) => {
         scope: getScope(message.author.id, guildId),
         before: settings.store.captureMessageContent && previousContent ? preview(previousContent) : undefined,
         after: content,
+        attachments,
+        links,
         ...info,
         metadata: {
             messageId: message.id,
             hadCachedOriginal: Boolean(previousContent),
+            attachmentCount: message.attachments.length,
+            linkCount: links.length,
         },
     });
 };
@@ -655,10 +1079,14 @@ const logMessageDelete = (messageId: string, channelId: string) => {
         details: content ? `Deleted message: ${content}` : "Deleted a message.",
         scope: getScope(snapshot.userId, guildId),
         content,
+        attachments: snapshot.attachments,
+        links: snapshot.links,
         ...info,
         metadata: {
             messageId,
             cached: true,
+            attachmentCount: snapshot.attachments?.length ?? 0,
+            linkCount: snapshot.links?.length ?? 0,
         },
     });
 
@@ -723,7 +1151,16 @@ const logReactionClear = (event: { channelId: string; messageId: string; }) => {
 };
 
 const logChannelEvent = (type: "channel_create" | "channel_delete" | "channel_update", event: ChannelFluxEvent) => {
+    // Guard before doing any work. getChannelEventInfo hits ChannelStore and GuildStore
+    // and builds an object, and CHANNEL_UPDATES delivers a whole batch of channels at
+    // once - so on a big server this ran hundreds of store lookups per dispatch only to
+    // throw the result away in addServerEvent. This was the single most expensive event
+    // in the client by total time.
+    const rawGuildId = event.channel?.guild_id ?? event.guildId;
+    if (rawGuildId != null && !shouldTrackServer(rawGuildId)) return;
+
     const info = getChannelEventInfo(event);
+    if (!shouldTrackServer(info.guildId)) return;
     const label = info.channelName ?? info.channelId ?? "Unknown channel";
     const verb = type === "channel_create" ? "Created" : type === "channel_delete" ? "Deleted" : "Updated";
 
@@ -737,7 +1174,11 @@ const logChannelEvent = (type: "channel_create" | "channel_delete" | "channel_up
 };
 
 const logThreadEvent = (type: "thread_create" | "thread_delete" | "thread_update", event: ChannelFluxEvent) => {
+    const rawGuildId = event.channel?.guild_id ?? event.guildId;
+    if (rawGuildId != null && !shouldTrackServer(rawGuildId)) return;
+
     const info = getChannelEventInfo(event);
+    if (!shouldTrackServer(info.guildId)) return;
     const label = info.channelName ?? info.channelId ?? "Unknown thread";
     const verb = type === "thread_create" ? "Created" : type === "thread_delete" ? "Deleted" : "Updated";
 
@@ -789,6 +1230,8 @@ const logGuildMemberEvent = (
 
 const logGuildEvent = (event: GuildFluxEvent) => {
     const guildId = event.guild?.id ?? event.guildId;
+    if (!shouldTrackServer(guildId)) return;
+
     const guildName = event.guild?.name ?? GuildStore.getGuild(guildId ?? "")?.name;
 
     addServerEvent("guild_update", guildId, `Server settings changed${guildName ? ` for ${guildName}` : ""}.`, {
@@ -831,9 +1274,9 @@ const patchUserContext: NavContextMenuPatchCallback = (children, { user }: UserC
 
 export default definePlugin({
     name: "Surveillance",
-    description: "Adds a local live event dashboard for selected users and servers.",
+    description: "Adds a local live event dashboard for selected users and servers, lets you watch over your friends and their actions.",
     tags: ["Friends", "Utility"],
-    authors: [{ name: "irritably", id: 928787166916640838n }],
+    authors: [{ name: "irritably", id: 928787166916640838n }, TestcordDevs.x2b, EquicordDevs.omaw],
     enabledByDefault: false,
     settings,
     contextMenus: {
@@ -868,6 +1311,11 @@ export default definePlugin({
         seenServerUsers.clear();
         lastStatuses.clear();
         lastActivities.clear();
+        userCoreProfiles.clear();
+        userDetailProfiles.clear();
+        guildMemberProfiles.clear();
+        identityHistories.clear();
+        voiceSessions.clear();
     },
 
     flux: {
@@ -924,6 +1372,9 @@ export default definePlugin({
         },
 
         CHANNEL_UPDATES({ channels }: { channels: Channel[]; }) {
+            // With no server targeted every channel in the batch is a guaranteed no-op,
+            // so skip the loop entirely rather than paying per-channel guard cost.
+            if (serverTargets.length === 0) return;
             for (const channel of channels) {
                 logChannelEvent("channel_update", { channel });
             }
@@ -951,6 +1402,26 @@ export default definePlugin({
 
         GUILD_MEMBER_UPDATE(event: GuildMemberFluxEvent) {
             logGuildMemberEvent("guild_member_update", event);
+        },
+
+        GUILD_MEMBER_PROFILE_UPDATE(event: GuildMemberProfileFluxEvent) {
+            logGuildMemberProfile(event);
+        },
+
+        USER_UPDATE(event: UserUpdateFluxEvent) {
+            logUserUpdate(event);
+        },
+
+        USER_PROFILE_FETCH_SUCCESS(event: UserProfileFluxEvent) {
+            logUserProfile(event);
+        },
+
+        USER_PROFILE_UPDATE_SUCCESS(event: UserProfileFluxEvent) {
+            logUserProfile(event);
+        },
+
+        CURRENT_USER_UPDATE(event: UserUpdateFluxEvent) {
+            logUserUpdate(event);
         },
 
         GUILD_UPDATE(event: GuildFluxEvent) {

@@ -139,7 +139,10 @@ function SelectSetting<T>({ settingsKey, label, options, disabled }: SelectOptio
                 options={options}
                 maxVisibleItems={5}
                 closeOnSelect={true}
-                select={v => settings.store[settingsKey] = v}
+                select={v => {
+                    settings.store[settingsKey] = v;
+                    updateRPC();
+                }}
                 isSelected={v => v === settings.store[settingsKey]}
                 serialize={v => String(v)}
                 isDisabled={disabled}
@@ -149,7 +152,7 @@ function SelectSetting<T>({ settingsKey, label, options, disabled }: SelectOptio
 }
 
 export function RPCSettings() {
-    const s = settings.use();
+    const s = settings.use(["type", "timestampMode"]);
 
     return (
         <div className={cl("root")}>

@@ -321,21 +321,12 @@ function isExplicitlyDisallowed(channel: string | Channel): boolean {
 }
 
 const ChatBarContextCheckbox: NavContextMenuPatchCallback = children => {
-    const {
-        chatIcon,
-        chatContextMenu,
-        enabledGlobally,
-        defaultHidden,
-        hideChatBoxTypingIndicators,
-        hideMembersListTypingIndicators
-    } = settings.use([
-        "chatIcon",
-        "chatContextMenu",
-        "enabledGlobally",
-        "defaultHidden",
-        "hideChatBoxTypingIndicators",
-        "hideMembersListTypingIndicators"
-    ]);
+    const chatIcon = settings.store.chatIcon;
+    const chatContextMenu = settings.store.chatContextMenu;
+    const enabledGlobally = settings.store.enabledGlobally;
+    const defaultHidden = settings.store.defaultHidden;
+    const hideChatBoxTypingIndicators = settings.store.hideChatBoxTypingIndicators;
+    const hideMembersListTypingIndicators = settings.store.hideMembersListTypingIndicators;
 
     if (!chatContextMenu) return;
 
@@ -447,7 +438,7 @@ export default definePlugin({
                     replace: "const silentTypingShouldHideChatBarTypingIndicators=$self.shouldHideChatBarTypingIndicators();$1"
                 },
                 {
-                    match: /("stop-animation".{0,80}?ref:\i,children:)/,
+                    match: /("stop-animation".{0,100}?ref:\i,children:)/,
                     replace: "$1silentTypingShouldHideChatBarTypingIndicators?[]:"
                 }
             ]

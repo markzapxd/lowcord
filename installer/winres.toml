@@ -1,0 +1,19 @@
+# go-winres configuration
+# Docs: https://github.com/tc-hib/go-winres
+
+# Version info
+info {
+    file_description   = "LowCord Installer"
+    file_version       = "1.0.0.0"
+    internal_name      = "LowCordInstaller"
+    original_filename  = "LowCord-Installer.exe"
+    product_name       = "LowCord"
+    product_version    = "1.0.0.0"
+    company_name       = "LowCord"
+    legal_copyright    = "GPL-3.0-or-later"
+}
+
+# Icon
+icon {
+    filename = "icon.png"
+}

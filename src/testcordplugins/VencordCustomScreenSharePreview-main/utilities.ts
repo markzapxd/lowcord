@@ -9,7 +9,6 @@ import { ChannelStore, SelectedChannelStore, UserStore } from "@webpack/common";
 import { CustomStreamPreviewState } from "./state";
 import { StreamKey } from "./types";
 
-
 const ChannelTypesMap = {
     1: "call",
     2: "guild",
@@ -23,6 +22,8 @@ export const localConsole = {
     error: (...args: any[]): void => console.error("[ScreenSharePreviewManipulate]:", ...args),
     debug: (...args: any[]): void => console.debug("[ScreenSharePreviewManipulate]:", ...args),
 };
+
+let previewTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
 export const parseStreamKey = (streamKey: string): StreamKey => {
     const [voiceChannelType, ...rest] = streamKey.split(":");
@@ -59,7 +60,7 @@ const uploadStreamPreview = async (image: string): Promise<void> => {
         if (!channelId) {
             if (interval) {
                 localConsole.log("Failed to retrieve current user channel id.");
-                clearInterval(interval);
+                stopSendingScreenSharePreview();
             }
             return;
         }
@@ -142,7 +143,7 @@ export const sendCustomPreview = async (image: string): Promise<void> => {
     // If a preview was manually uploaded within the last 70 seconds,
     // delay the next upload to avoid sending too frequently.
     const waitUntilSending = Math.max(lastStreamPreviewSend + 70_000 - Date.now(), 0);
-    setTimeout(
+    previewTimeoutId = setTimeout(
         () => uploadStreamPreview(image),
         waitUntilSending
     );
@@ -150,6 +151,11 @@ export const sendCustomPreview = async (image: string): Promise<void> => {
 
 export const stopSendingScreenSharePreview = (): void => {
     const { resendStreamPreviewIntervalId } = CustomStreamPreviewState.getState();
+
+    if (previewTimeoutId !== null) {
+        clearTimeout(previewTimeoutId);
+        previewTimeoutId = null;
+    }
 
     CustomStreamPreviewState.setState({
         isSendingCustomStreamPreview: false,
@@ -235,4 +241,3 @@ export const imageFileToStreamPreview = (file: File): Promise<string> => {
         reader.readAsDataURL(file);
     });
 };
-

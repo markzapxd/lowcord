@@ -7,10 +7,9 @@
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
 import { debounce } from "@shared/debounce";
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import { humanFriendlyJoin } from "@utils/text";
-import { makeRange } from "@utils/types";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { makeRange, OptionType } from "@utils/types";
 import { User } from "@vencord/discord-types";
 import { findByPropsLazy, findStoreLazy } from "@webpack";
 import { ChannelStore, GuildMemberStore, Menu, RelationshipStore, SelectedChannelStore, Toasts, UserStore } from "@webpack/common";
@@ -31,7 +30,6 @@ const { toggleSelfMute } = findByPropsLazy("toggleSelfMute");
 const MediaEngineStore = findStoreLazy("MediaEngineStore");
 
 const VoiceStateStore = findStoreLazy("VoiceStateStore");
-
 
 interface SpeakingState {
     speakingFlags: number,
@@ -92,9 +90,12 @@ const settings = definePluginSettings({
     }
 });
 
+const AUTO_MUTE_KEYS = ["isEnabled", "timeout", "nonFriendJoinsChannel"];
 
 const AudioDeviceContextMenuPatch: NavContextMenuPatchCallback = (children, props: { renderInputVolume?: boolean; }) => {
-    const { isEnabled, timeout, nonFriendJoinsChannel } = settings.use(["isEnabled", "timeout", "nonFriendJoinsChannel"]);
+    const isEnabled = settings.store.isEnabled;
+    const timeout = settings.store.timeout;
+    const nonFriendJoinsChannel = settings.store.nonFriendJoinsChannel;
 
     if ("renderInputVolume" in props) {
         children.splice(children.length - 1, 0,
@@ -149,7 +150,6 @@ const AudioDeviceContextMenuPatch: NavContextMenuPatchCallback = (children, prop
         );
     }
 };
-
 
 let isSpeaking = false;
 
@@ -282,8 +282,3 @@ export default definePlugin({
     },
     trustedUsers
 });
-
-
-
-
-

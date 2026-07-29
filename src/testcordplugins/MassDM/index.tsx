@@ -9,6 +9,7 @@ import { definePluginSettings } from "@api/Settings";
 import { TestcordDevs } from "@utils/constants";
 import { sendMessage } from "@utils/discord";
 import { Logger } from "@utils/Logger";
+import { sleep } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import { ChannelStore, FluxDispatcher, React, RelationshipStore, UserStore } from "@webpack/common";
 
@@ -39,6 +40,16 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Enable automatic responses to triggers",
         default: false,
+    },
+    useWhitelist: {
+        type: OptionType.BOOLEAN,
+        description: "Treat the user IDs list as a whitelist (only message them) instead of a blacklist (exclude them).",
+        default: false,
+    },
+    userIds: {
+        type: OptionType.STRING,
+        description: "Comma-separated user IDs to filter by, used as a blacklist or whitelist depending on the setting above.",
+        default: "",
     },
     responses: {
         type: OptionType.COMPONENT,
@@ -93,11 +104,21 @@ function ResponsesSettings() {
     );
 }
 
+function applyIdFilter(users: string[]) {
+    const idList = settings.store.userIds.split(",").map(id => id.trim()).filter(id => id);
+    if (idList.length === 0) return users;
+
+    return settings.store.useWhitelist
+        ? users.filter(id => idList.includes(id))
+        : users.filter(id => !idList.includes(id));
+}
+
 function getUsersToMessage() {
     if (settings.store.allOpenDMs) {
         // Get all user IDs that have DM channels
         const dmMap = ChannelStore.getMutableDMsByUserIds();
-        return Object.keys(dmMap).filter(id => id !== UserStore.getCurrentUser().id);
+        const openDms = Object.keys(dmMap).filter(id => id !== UserStore.getCurrentUser().id);
+        return applyIdFilter(openDms);
     }
 
     const users: string[] = [];
@@ -110,10 +131,10 @@ function getUsersToMessage() {
     if (settings.store.onlyFriends && settings.store.friends) {
         // If only friends, filter to only friends
         const friendIds = RelationshipStore.getFriendIDs();
-        return users.filter(id => friendIds.includes(id));
+        return applyIdFilter(users.filter(id => friendIds.includes(id)));
     }
 
-    return users.filter(id => id !== UserStore.getCurrentUser().id);
+    return applyIdFilter(users.filter(id => id !== UserStore.getCurrentUser().id));
 }
 
 export default definePlugin({
@@ -172,7 +193,7 @@ export default definePlugin({
                                 channelId: null,
                             });
                             // Wait a bit for the channel to be created
-                            await new Promise(resolve => setTimeout(resolve, 100));
+                            await sleep(100);
                             channelId = ChannelStore.getDMFromUserId(userId);
                         }
                         if (channelId) {
@@ -183,7 +204,7 @@ export default definePlugin({
                     }
 
                     if (i < users.length - 1) {
-                        await new Promise(resolve => setTimeout(resolve, delay));
+                        await sleep(delay);
                     }
                 }
 

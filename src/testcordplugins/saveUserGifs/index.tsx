@@ -1,17 +1,18 @@
 /*
- * TestCord, a Discord client mod
- * Copyright (c) 2024 Mixiruri
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { definePluginSettings } from "@api/Settings";
 import { addContextMenuPatch, NavContextMenuPatchCallback, removeContextMenuPatch } from "@api/ContextMenu";
 import { DataStore } from "@api/index";
+import { definePluginSettings } from "@api/Settings";
 import { Link } from "@components/Link";
 import { TestcordDevs } from "@utils/constants";
+import { sleep } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
-import { showToast, Toasts, Menu, SelectedChannelStore } from "@webpack/common";
-import { findByPropsLazy, findByCodeLazy } from "@webpack";
+import { findByCodeLazy,findByPropsLazy } from "@webpack";
+import { Menu, SelectedChannelStore,showToast, Toasts } from "@webpack/common";
 
 const TokenStore = findByPropsLazy("getToken");
 const addFavoriteGif = findByCodeLazy("favoriteGifs", "order", "updateAsync");
@@ -65,7 +66,6 @@ const settings = definePluginSettings({
 let isScanning = false;
 let currentGifsFound = 0;
 let stopRequested = false;
-
 
 // ─── HeartGifs Integration ───────────────────────────────────────────────────
 
@@ -129,10 +129,6 @@ async function isInHeartGifs(url: string): Promise<boolean> {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function sleep(ms: number): Promise<void> {
-    return new Promise(r => setTimeout(r, ms));
-}
 
 function getToken(): string | null {
     try {
@@ -400,8 +396,9 @@ async function scanUserGifs(userId: string, username: string, guildId: string | 
 const userContextMenuPatch: NavContextMenuPatchCallback = (children, { user, guildId }) => {
     if (!user) return;
     children.push(
-        <Menu.MenuSeparator />,
+        <Menu.MenuSeparator key="save-user-gifs-separator" />,
         <Menu.MenuItem
+            key="save-user-gifs"
             id="save-user-gifs"
             label="Save GIFs from user"
             disabled={isScanning}
@@ -409,6 +406,7 @@ const userContextMenuPatch: NavContextMenuPatchCallback = (children, { user, gui
         />,
         ...(isScanning ? [
             <Menu.MenuItem
+                key="save-user-gifs-stop"
                 id="save-user-gifs-stop"
                 label="⏹ Stop saving GIFs"
                 action={() => {
@@ -417,6 +415,7 @@ const userContextMenuPatch: NavContextMenuPatchCallback = (children, { user, gui
                 }}
             />,
             <Menu.MenuItem
+                key="save-user-gifs-status"
                 id="save-user-gifs-status"
                 label={`📊 ${currentGifsFound} GIFs found so far`}
                 action={() => showToast(`${currentGifsFound} GIFs found so far`, Toasts.Type.MESSAGE)}

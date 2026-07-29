@@ -5,8 +5,8 @@
  */
 
 import { enableStyle } from "@api/Styles";
-import { ErrorBoundary } from "@components/index";
 import { getUserSettingLazy } from "@api/UserSettings";
+import { ErrorBoundary } from "@components/index";
 import { copyWithToast } from "@utils/discord";
 import { Margins } from "@utils/margins";
 import definePlugin from "@utils/types";

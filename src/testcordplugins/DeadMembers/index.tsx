@@ -1,6 +1,27 @@
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+import "./style.css";
+
+import { definePluginSettings } from "@api/Settings";
+import ErrorBoundary from "@components/ErrorBoundary";
 import { Devs } from "@utils/constants";
-import definePlugin from "@utils/types";
-import { ChannelStore, GuildMemberStore, useStateFromStores } from "@webpack/common";
+import definePlugin, { OptionType } from "@utils/types";
+import { ChannelStore, GuildMemberStore } from "@webpack/common";
+
+const settings = definePluginSettings({
+    indicatorStyle: {
+        type: OptionType.SELECT,
+        description: "How to indicate dead members",
+        options: [
+            { label: "Strikethrough", value: "strikethrough", default: true },
+            { label: "Badge", value: "badge" },
+        ],
+    },
+});
 
 export default definePlugin({
     name: "DeadMembers",
@@ -8,51 +29,40 @@ export default definePlugin({
     authors: [Devs.Kyuuhachi],
     tags: ["Servers", "Utility"],
     enabledByDefault: false,
+    settings,
 
     patches: [
         {
-            find: '.BADGES=1]="BADGES"',
+            find: '"data-username-has-gradient"',
             replacement: {
-                match: /(\i)=\{className:\i.username,style:.*?onContextMenu:\i,children:.*?\},/,
-                replace: "$&__dummyvar=($1.children=$self.wrapMessageAuthor(arguments[0],$1.children)),"
-            }
-        },
-        {
-            find: "Messages.FORUM_POST_AUTHOR_A11Y_LABEL",
-            replacement: {
-                match: /(?<=\}=(\i),\{(user:\i,author:\i)\}=.{0,400}?\(\i\.Fragment,{children:)\i(?=}\),)/,
-                replace: "$self.wrapForumAuthor({...$1,$2},$&)"
+                match: /(?<=onContextMenu:\i,children:)(.{0,300}?)(?=,"data-text":)/,
+                replace: "$self.wrapMessageAuthor(arguments[0],$&)"
             }
         },
     ],
 
-    wrapMessageAuthor({ message }, text) {
+    wrapMessageAuthor({ message }: any, text: any) {
         const channel = ChannelStore.getChannel(message.channel_id);
-        return message.webhookId
-            ? text
-            : <DeadIndicator
+        if (message.webhookId) return text;
+        return (
+            <DeadIndicator
                 channel={channel}
                 userId={message.author.id}
                 text={text}
-            />;
-    },
-
-    wrapForumAuthor({ channel, user }, text) {
-        return !user
-            ? text
-            : <DeadIndicator
-                channel={channel}
-                userId={user.id}
-                text={text}
-            />;
+            />
+        );
     },
 });
 
+const DeadIndicator = ErrorBoundary.wrap(function DeadIndicator({ channel, userId, text }: { channel: any; userId: string; text: any; }) {
+    const guildId = channel?.guild_id;
+    if (!guildId) return text;
 
-function DeadIndicator({ channel, userId, text }) {
-    const isMember = useStateFromStores(
-        [GuildMemberStore],
-        () => GuildMemberStore.isMember(channel?.guild_id, userId),
-    );
-    return channel?.guild_id && !isMember ? <s className="c98-author-dead">{text}</s> : text;
-}
+    const isMember = GuildMemberStore.isMember(guildId, userId);
+    if (isMember) return text;
+
+    if (settings.store.indicatorStyle === "badge") {
+        return <span className="c98-author-dead-badge">{text}</span>;
+    }
+    return <s className="c98-author-dead">{text}</s>;
+}, { noop: true });

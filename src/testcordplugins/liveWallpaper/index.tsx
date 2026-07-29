@@ -1,12 +1,11 @@
 /*
- * Nightcord — LiveWallpaper
- * Global wallpaper for the entire Discord interface (image, gif, video).
- * Works alongside ChannelWallpaper (which remains priority per channel).
- * Everything is configured in the plugin settings.
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { definePluginSettings } from "@api/Settings";
 import { DataStore } from "@api/index";
+import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { Button, Forms, React, showToast, Toasts } from "@webpack/common";
 
@@ -14,6 +13,8 @@ import { Button, Forms, React, showToast, Toasts } from "@webpack/common";
 
 const STYLE_ID = "live-wallpaper-style";
 const CONTAINER_ID = "live-wallpaper-container";
+let active = false;
+let wallpaperGeneration = 0;
 
 // ── File picker ────────────────────────────────────────────────────────────────
 
@@ -51,12 +52,15 @@ async function getWallpaperUrl(): Promise<string> {
 function SettingsComponent() {
     const [currentUrl, setCurrentUrl] = React.useState("");
     const [inputValue, setInputValue] = React.useState("");
+    const mounted = React.useRef(true);
 
     React.useEffect(() => {
         getWallpaperUrl().then(url => {
+            if (!mounted.current) return;
             setCurrentUrl(url);
             if (!url.startsWith("data:")) setInputValue(url);
         });
+        return () => { mounted.current = false; };
     }, []);
 
     const isDataUrl = currentUrl.startsWith("data:");
@@ -65,7 +69,7 @@ function SettingsComponent() {
     return (
         <div className="live-wallpaper-settings">
             <Forms.FormTitle tag="h3">File (Image / Gif / Video)</Forms.FormTitle>
-            
+
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 {/* File Picker */}
                 <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -73,9 +77,11 @@ function SettingsComponent() {
                         size={Button.Sizes.SMALL}
                         onClick={async () => {
                             const dataUrl = await pickFile();
+                            if (!mounted.current) return;
                             if (dataUrl) {
                                 await DataStore.set(REMOTE_URL_KEY, "");
                                 await DataStore.set(LOCAL_DATA_KEY, dataUrl);
+                                if (!mounted.current) return;
                                 setCurrentUrl(dataUrl);
                                 setInputValue("");
                                 applyWallpaper();
@@ -93,6 +99,7 @@ function SettingsComponent() {
                             onClick={async () => {
                                 await DataStore.set(REMOTE_URL_KEY, "");
                                 await DataStore.set(LOCAL_DATA_KEY, "");
+                                if (!mounted.current) return;
                                 setCurrentUrl("");
                                 setInputValue("");
                                 applyWallpaper();
@@ -122,11 +129,12 @@ function SettingsComponent() {
                             cursor: isDataUrl ? "not-allowed" : "text",
                             opacity: isDataUrl ? 0.6 : 1
                         }}
-                        onChange={async (e) => {
+                        onChange={async e => {
                             const val = e.target.value.trim();
                             setInputValue(val);
                             await DataStore.set(LOCAL_DATA_KEY, "");
                             await DataStore.set(REMOTE_URL_KEY, val);
+                            if (!mounted.current) return;
                             setCurrentUrl(val);
                             applyWallpaper();
                         }}
@@ -136,13 +144,13 @@ function SettingsComponent() {
 
             {hasFile && (
                 <div style={{ marginTop: "10px", fontSize: "12px", color: "var(--text-muted)", fontStyle: "italic" }}>
-                    {isDataUrl 
-                        ? `✅ Local file: ${Math.round(currentUrl.length / 1024)} KB` 
+                    {isDataUrl
+                        ? `✅ Local file: ${Math.round(currentUrl.length / 1024)} KB`
                         : `✅ URL: ${currentUrl.slice(0, 50)}${currentUrl.length > 50 ? "..." : ""}`
                     }
                 </div>
             )}
-            
+
             <div style={{ margin: "20px 0", borderBottom: "1px solid var(--background-modifier-accent)" }} />
         </div>
     );
@@ -210,9 +218,11 @@ function removeWallpaperElements() {
 }
 
 async function applyWallpaper() {
+    const generation = ++wallpaperGeneration;
     removeWallpaperElements();
 
     const url = await getWallpaperUrl();
+    if (!active || generation !== wallpaperGeneration) return;
     if (!url) return;
 
     const opacity = settings.store.opacity ?? 0.15;
@@ -285,6 +295,8 @@ export default definePlugin({
     _startTimer: null as ReturnType<typeof setTimeout> | null,
 
     start() {
+        active = true;
+        wallpaperGeneration++;
         // Small delay to let the DOM be ready
         this._startTimer = setTimeout(() => {
             this._startTimer = null;
@@ -293,6 +305,8 @@ export default definePlugin({
     },
 
     stop() {
+        active = false;
+        wallpaperGeneration++;
         if (this._startTimer) {
             clearTimeout(this._startTimer);
             this._startTimer = null;

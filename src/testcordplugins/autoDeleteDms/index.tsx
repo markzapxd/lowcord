@@ -18,6 +18,7 @@
 
 import { definePluginSettings } from "@api/Settings";
 import { TestcordDevs } from "@utils/constants";
+import { sleep } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
 import { FluxDispatcher } from "@webpack/common";
@@ -104,6 +105,7 @@ export default definePlugin({
             clearInterval(this.cleanupInterval);
             this.cleanupInterval = null;
         }
+        this.messageTimestamps.clear();
         this.deletionQueue = [];
         this.isProcessingQueue = false;
         this.retryDelay = 1000;
@@ -243,7 +245,7 @@ export default definePlugin({
             } catch (error: any) {
                 this.handleDeletionError(error, item);
             } finally {
-                await new Promise(resolve => setTimeout(resolve, 2500));
+                await sleep(2500);
                 this.isProcessingQueue = false;
                 if (this.deletionQueue.length > 0) this.processQueue();
             }
@@ -252,7 +254,7 @@ export default definePlugin({
 
     async safeGetMessage(messageId: string, channelId: string) {
         try {
-            const cachedMessage = MessageStore.getMessage(messageId);
+            const cachedMessage = MessageStore.getMessage(channelId, messageId);
             if (cachedMessage?.author?.id === UserStore.getCurrentUser().id) {
                 return cachedMessage;
             }
@@ -282,7 +284,7 @@ export default definePlugin({
             const discordError = error as DiscordAPIError;
             if (discordError?.status === 429 && retryCount < 3) {
                 const retryAfter = discordError.body?.retry_after || 5;
-                await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+                await sleep(retryAfter * 1000);
                 return this.safeDeleteMessage(channelId, messageId, retryCount + 1);
             }
             throw error;
@@ -336,6 +338,7 @@ export default definePlugin({
                         console.log("[AutoDeleteDMs] Attempting to delete message:", messageId);
                         try {
                             await DeleteMessageStore.deleteMessage(data.channelId, messageId);
+                            this.messageTimestamps.delete(messageId);
                             console.log("[AutoDeleteDMs] Successfully deleted message:", messageId);
                         } catch (error) {
                             console.error("[AutoDeleteDMs] Failed to delete message:", error);
@@ -366,8 +369,3 @@ export default definePlugin({
         }, 2000);
     }
 });
-
-
-
-
-

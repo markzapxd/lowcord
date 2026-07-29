@@ -8,7 +8,7 @@ import "./styles.css";
 
 import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
 import ErrorBoundary from "@components/ErrorBoundary";
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import definePlugin from "@utils/types";
 import { User } from "@vencord/discord-types";
 import { Button, Menu, TextArea, UserStore, useState } from "@webpack/common";
@@ -31,7 +31,7 @@ const patchUserContext: NavContextMenuPatchCallback = (children, { user }: {
 
     const regularButtonIndex = contextGroup.findIndex(element => element?.props.id === "note");
 
-    if (!regularButtonIndex) return;
+    if (regularButtonIndex === -1) return;
 
     const newUserNotesButton = <Menu.MenuItem
         id="vc-open-user-notes"
@@ -80,18 +80,9 @@ export default definePlugin({
     settings,
     patches: [
         {
-            predicate: () => {
-                return settings.store.replaceRegularNotes;
-            },
-            find: ".Messages.NOTE_PLACEHOLDER,",
-            replacement: {
-                match: /componentDidMount\(\)\{if.{0,250}\}render\(\)\{.{0,300}\.Messages\.LOADING_NOTE.{0,300}\}constructor/,
-                replace: "componentDidMount(){}render(){return $self.notesSectionRender(this.props.userId)}constructor"
-            }
-        },
-        {
             find: "toolbar:function",
             predicate: () => settings.store.addNotesDataToolBar,
+            noWarn: true,
             replacement: {
                 match: /(function \i\(\i\){)(.{1,200}toolbar.{1,100}mobileToolbar)/,
                 replace: "$1$self.addToolBarButton(arguments[0]);$2"
@@ -109,13 +100,13 @@ export default definePlugin({
     addToolBarButton: (children: { toolbar: React.ReactNode[] | React.ReactNode; }) => {
         if (Array.isArray(children.toolbar))
             return children.toolbar.push(
-                <ErrorBoundary noop={true}>
+                <ErrorBoundary key="user-notes-data" noop={true}>
                     <OpenNotesDataButton />
                 </ErrorBoundary>
             );
 
         children.toolbar = [
-            <ErrorBoundary noop={true}>
+            <ErrorBoundary key="user-notes-data" noop={true}>
                 <OpenNotesDataButton />
             </ErrorBoundary>,
             children.toolbar,
@@ -136,8 +127,3 @@ export default definePlugin({
         }
     }
 });
-
-
-
-
-

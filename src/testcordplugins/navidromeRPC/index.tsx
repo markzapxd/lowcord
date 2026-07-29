@@ -64,11 +64,20 @@ export default definePlugin({
     authors: [Devs.nin0dev],
     settings,
     interval: -1,
+    restartTimeout: -1,
+    running: false,
+    generation: 0,
+    updateInFlight: false,
     start() {
+        this.running = true;
+        this.generation++;
+        this.updateInFlight = false;
         (0, eval)(smd5);
         settings.store.isLoggedIn && this.initRPC();
     },
     stop() {
+        this.running = false;
+        this.generation++;
         delete window.SparkMD5;
         FluxDispatcher.dispatch({
             type: "LOCAL_ACTIVITY_UPDATE",
@@ -76,25 +85,36 @@ export default definePlugin({
             socket: "NavidromeRPC"
         });
         clearInterval(this.interval);
+        clearTimeout(this.restartTimeout);
     },
     req,
     getNowPlayingTrack,
     initRPC() {
+        if (!this.running) return;
+        const { generation } = this;
         const fn = async () => {
+            if (!this.running || generation !== this.generation || this.updateInFlight) return;
+            this.updateInFlight = true;
             try {
-                await this.setRichPresence(await getNowPlayingTrack());
+                const track = await getNowPlayingTrack();
+                if (!this.running || generation !== this.generation) return;
+                await this.setRichPresence(track, generation);
             } catch (e) {
                 console.error(e);
+                if (!this.running || generation !== this.generation) return;
                 FluxDispatcher.dispatch({
                     type: "LOCAL_ACTIVITY_UPDATE",
                     activity: null,
                     socket: "NavidromeRPC"
                 });
                 clearInterval(this.interval);
-                setTimeout(() => {
+                this.restartTimeout = window.setTimeout(() => {
+                    if (!this.running || generation !== this.generation) return;
                     // @ts-expect-error
                     this.interval = setInterval(fn, settings.store.delay);
                 }, 5000);
+            } finally {
+                if (generation === this.generation) this.updateInFlight = false;
             }
         };
 
@@ -102,7 +122,8 @@ export default definePlugin({
         // @ts-expect-error
         this.interval = setInterval(fn, settings.store.delay);
     },
-    async setRichPresence(track: NowPlayingTrack) {
+    async setRichPresence(track: NowPlayingTrack, generation: number) {
+        if (!this.running || generation !== this.generation) return;
         if (!track.isPlaying) {
             return void FluxDispatcher.dispatch({
                 type: "LOCAL_ACTIVITY_UPDATE",
@@ -117,6 +138,9 @@ export default definePlugin({
         if (settings.store.shouldCalculateTimestamps) times = {
             timestamps: track.timestamps!
         };
+
+        const largeImage = await getApplicationAsset(track.album!.art);
+        if (!this.running || generation !== this.generation) return;
 
         FluxDispatcher.dispatch({
             type: "LOCAL_ACTIVITY_UPDATE",
@@ -133,7 +157,7 @@ export default definePlugin({
                 details: track.title!,
                 state: track.artists!.join(", "),
                 assets: {
-                    large_image: await getApplicationAsset(track.album!.art),
+                    large_image: largeImage,
                     large_text: track.album!.name
                 },
                 ...times

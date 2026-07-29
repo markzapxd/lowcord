@@ -194,10 +194,6 @@ export const Devs = /* #__PURE__*/ Object.freeze({
         name: "kemo",
         id: 715746190813298788n
     },
-    dzshn: {
-        name: "dzshn",
-        id: 310449948011528192n
-    },
     Ducko: {
         name: "Ducko",
         id: 506482395269169153n
@@ -376,8 +372,8 @@ export const Devs = /* #__PURE__*/ Object.freeze({
         id: 354191516979429376n
     },
     Rini: {
-        name: "Rini",
-        id: 1079479184478441643n
+        name: "rini",
+        id: 0n
     },
     castdrian: {
         name: "castdrian",
@@ -517,7 +513,7 @@ export const Devs = /* #__PURE__*/ Object.freeze({
     },
     Byeoon: {
         name: "byeoon",
-        id: 1167275288036655133n
+        id: 495683688474869781n
     },
     Kaitlyn: {
         name: "kaitlyn",
@@ -660,10 +656,30 @@ export const Devs = /* #__PURE__*/ Object.freeze({
         name: "prism",
         id: 390884143749136386n,
     },
+    creations: {
+        name: "creations",
+        id: 209830981060788225n
+    },
     nightmaresan: {
         name: "NightmareSan",
         id: 304239816466235392n
     },
+    angelcube: {
+        name: "angelcube",
+        id: 958505257288208446n
+    },
+    Lunascape: {
+        name: "Lunascape",
+        id: 383365021415243776n
+    },
+    jax: {
+        name: "jax",
+        id: 1493703027801194598n
+    },
+    yuna0x0: {
+        name: "yuna0x0",
+        id: 213656926414831616n
+    }
 } satisfies Record<string, Dev>);
 
 export const EquicordDevs = Object.freeze({
@@ -1122,7 +1138,7 @@ export const EquicordDevs = Object.freeze({
     },
     Byeoon: {
         name: "byeoon",
-        id: 1167275288036655133n
+        id: 495683688474869781n
     },
     Skully: {
         name: "Skully",
@@ -1359,6 +1375,46 @@ export const EquicordDevs = Object.freeze({
     SobakinTech: {
         name: "sobakintech",
         id: 745203026335236178n
+    },
+    Nyro: {
+        name: "zeyno36",
+        id: 1325431712406179962n
+    },
+    Jahsohsani: {
+        name: "jahsohsani",
+        id: 806442568564604968n
+    },
+    dawn: {
+        name: "dawn",
+        id: 604653220341743618n
+    },
+    Willow: {
+        name: "Willow",
+        id: 965933914092888074n
+    },
+    kat: {
+        name: "kat",
+        id: 665120188047556609n
+    },
+    Star123451: {
+        name: "Star123451",
+        id: 1037526188039618560n
+    },
+    auggeeo: {
+        name: "August (auggeeo)",
+        id: 594864203102158859n
+    },
+    bastih18: {
+        name: "bastih18",
+        id: 273797150880563201n
+    },
+    lucabeyer: {
+        name: "luca.beyer",
+        id: 405090676771127317n
+    },
+    benjas333: {
+        name: "benjas333",
+        id: 456577284464443394n,
     },
 } satisfies Record<string, Dev>);
 

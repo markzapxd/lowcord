@@ -7,31 +7,29 @@
 import "./style/styles.css";
 
 import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
+import { Button, TextButton } from "@components/Button";
+import { LinkIcon, OpenExternalIcon, SafetyIcon } from "@components/Icons";
 import { ModalContent, ModalFooter, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import definePlugin from "@utils/types";
 import { Message } from "@vencord/discord-types";
 import { Alerts, Menu, React, TextInput, useState } from "@webpack/common";
-import { Button, TextButton } from "@components/Button";
-
-import { LinkIcon, OpenExternalIcon, SafetyIcon } from "@components/Icons";
 
 import { AnalysisAccessory, handleAnalysis } from "./AnalysisAccesory";
-import { getThreat } from "./threatStore";
-import { analyzeUserWithCordCat } from "./analyzers/CordCat";
-import { lookDangeCord } from "./analyzers/Dangercord";
-import { analyzeDiscordInvite, isDiscordInvite } from "./analyzers/DiscordInvite";
-import { analyzeFileWithHybridAnalysis, analyzeUrlWithHybridAnalysis } from "./analyzers/HybridAnalysis";
 import { analyzeWithCertPL } from "./analyzers/CertPL";
+import { analyzeUserWithCordCat } from "./analyzers/CordCat";
 import { analyzeWithCrtSh } from "./analyzers/CrtSh";
+import { analyzeDiscordInvite, isDiscordInvite } from "./analyzers/DiscordInvite";
 import { analyzeWithFishFish } from "./analyzers/FishFish";
+import { analyzeFileWithHybridAnalysis, analyzeUrlWithHybridAnalysis } from "./analyzers/HybridAnalysis";
+import { runModularScan } from "./analyzers/ModularScan";
 import { analyzeWithSucuri } from "./analyzers/Sucuri";
 import { analyzeWithVirusTotal } from "./analyzers/VirusTotal";
 import { analyzeWithWhereGoes } from "./analyzers/WhereGoes";
-import { runModularScan } from "./analyzers/ModularScan";
 import { autoAnalyzeMessage, extractUrlsFromMessage, manualAnalyzeUrls } from "./autoAnalyze";
-import { settings } from "./settings";
 import { getModulesSync } from "./modularScanStore";
-import { initFilters, setCustomWhitelist, setCustomBlocklist } from "./urlFilter";
+import { settings } from "./settings";
+import { getThreat } from "./threatStore";
+import { initFilters, setCustomBlocklist,setCustomWhitelist } from "./urlFilter";
 import { extractCdnFileUrls, truncateUrl } from "./utils";
 
 async function genericAnalyze(messageId: string, url: string, analyzer: (url: string, silent: boolean) => Promise<any>, silent = false) {
@@ -46,34 +44,6 @@ async function genericAnalyzeFile(messageId: string, fileUrl: string, fileName: 
     if (result) {
         handleAnalysis(messageId, result, fileUrl);
     }
-}
-
-async function analyzeUser(messageId: string | undefined, user: any, silent = false) {
-    const result = await lookDangeCord(user, silent);
-    if (!result) return;
-
-    if (messageId) {
-        handleAnalysis(messageId, result);
-        return;
-    }
-
-    openModal(modalProps => (
-        <ModalRoot {...modalProps} size={ModalSize.SMALL}>
-            <ModalHeader>
-                <span style={{ fontWeight: 700, fontSize: "16px", color: "var(--white-500, #fff)" }}>Dangercord Analysis</span>
-            </ModalHeader>
-            <ModalContent style={{ padding: "16px" }}>
-                {result.details.map((detail, i) => (
-                    <div key={i} className={`vc-analyze-detail vc-analyze-${detail.type}`} style={{ marginBottom: "6px" }}>
-                        {detail.message}
-                    </div>
-                ))}
-            </ModalContent>
-            <ModalFooter>
-                <Button onClick={modalProps.onClose}>Close</Button>
-            </ModalFooter>
-        </ModalRoot>
-    ));
 }
 
 function openExternal(url: string) {
@@ -175,15 +145,6 @@ const messageCtxPatch: NavContextMenuPatchCallback = (children, { message }: { m
     const group = findGroupChildrenByChildId("copy-text", children)
         ?? findGroupChildrenByChildId("copy-link", children)
         ?? children;
-
-    group.push(
-        <Menu.MenuItem
-            id="vc-analyze-dangecord"
-            label="Scan author with Dangercord"
-            icon={SafetyIcon}
-            action={() => analyzeUser(message.id, message.author)}
-        />
-    );
 
     if (settings.store.enableCordCat) {
         const authorName = message.author.username || message.author.id;
@@ -427,17 +388,6 @@ const userContextPatch: NavContextMenuPatchCallback = (children, { user, id }: {
         );
     }
 
-    if (user) {
-        children.push(
-            <Menu.MenuItem
-                id="vc-analyze-user-dangecord"
-                label="Analyze User with Dangercord"
-                icon={SafetyIcon}
-                action={() => analyzeUser(undefined, user)}
-            />
-        );
-    }
-
     if (settings.store.enableCordCat && userId) {
         const username = user?.username || userId;
         children.push(
@@ -579,6 +529,8 @@ export default definePlugin({
     flux: {
         MESSAGE_CREATE({ message, optimistic }: { message: Message; optimistic: boolean; }) {
             if (optimistic) return;
+            if ((message as any).__vaAnalyzed) return;
+            (message as any).__vaAnalyzed = true;
             autoAnalyzeMessage(message);
         }
     },
@@ -595,7 +547,10 @@ export default definePlugin({
     },
 
     renderMessageAccessory: props => {
-        autoAnalyzeMessage(props.message);
+        if (!(props.message as any).__vaAnalyzed) {
+            (props.message as any).__vaAnalyzed = true;
+            autoAnalyzeMessage(props.message);
+        }
         return <AnalysisAccessory message={props.message} />;
     },
 });

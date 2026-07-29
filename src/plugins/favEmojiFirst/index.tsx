@@ -104,6 +104,7 @@ const cl = classNameFactory("vc-emoji-alias-");
 let aliasMap: AliasMap = {};
 const aliasListeners = new Set<() => void>();
 let globalContextPatch: GlobalContextMenuPatchCallback | null = null;
+const NON_EMOJI_NAV_IDS = new Set(["user-context", "guild-context", "channel-context", "gdm-context", "thread-context", "dev-context", "account-context"]);
 const unicodeSurrogateCache = new Map<string, string | null>();
 const aliasResultCache = new Map<string, EmojiResult | null>();
 
@@ -917,17 +918,10 @@ function insertSetAliasMenuItem(children: Array<React.ReactElement<any> | null>,
         />
     );
 
-    const favoriteGroup = findGroupChildrenByChildId(
-        ["favorite-emoji", "favourite-emoji", "unfavorite-emoji", "unfavourite-emoji"],
-        children,
-        true
-    );
-    if (favoriteGroup) {
-        favoriteGroup.push(menuItem);
-        return;
-    }
-
-    const group = findGroupChildrenByChildId(["copy-link", "copy-text", "copy-message-link"], children, true);
+    const group = findGroupChildrenByChildId([
+        "favorite-emoji", "favourite-emoji", "unfavorite-emoji", "unfavourite-emoji",
+        "copy-link", "copy-text", "copy-message-link"
+    ], children, true);
     if (group) {
         group.push(menuItem);
         return;
@@ -1158,6 +1152,7 @@ export default definePlugin({
             if (_navId === "expression-picker" || _navId === "message" || _navId === "message-actions" || _navId === "textarea-context") {
                 return;
             }
+            if (NON_EMOJI_NAV_IDS.has(_navId)) return;
             const alreadyAdded = children.some(child => child?.props?.id === "vc-emoji-alias-set");
             if (alreadyAdded) return;
 

@@ -1,12 +1,14 @@
 /*
- * Testcord BetterDiscord Plugin Manager - Enhanced
- * Loads and manages BetterDiscord .plugin.js files with improved compatibility
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Logger } from "@utils/Logger";
-import { createBdApi, BdApi } from "./BdApi";
 import { Settings } from "@api/Settings";
+import { Logger } from "@utils/Logger";
 import { React } from "@webpack/common";
+
+import { createBdApi } from "./BdApi";
 
 const logger = new Logger("BDPluginManager", "#ff7373");
 
@@ -249,8 +251,8 @@ export class BDPluginManager {
                                 writeFileSync: () => { },
                                 existsSync: () => false,
                                 join: (...args: string[]) => args.join("/"),
-                                basename: (p: string) => p.split(/[\/\\]/).pop() || p,
-                                dirname: (p: string) => p.split(/[\/\\]/).slice(0, -1).join("/"),
+                                basename: (p: string) => p.split(/[/\\]/).pop() || p,
+                                dirname: (p: string) => p.split(/[/\\]/).slice(0, -1).join("/"),
                                 ipcRenderer: { invoke: () => Promise.resolve(null), send: () => { } },
                                 remote: {}
                             };
@@ -272,7 +274,7 @@ export class BDPluginManager {
                     "",
                     bdApi,
                     typeof window !== "undefined" ? window : {},
-                    { env: {}, platform: 'browser' },
+                    { env: {}, platform: "browser" },
                     typeof (window as any).DiscordNative !== "undefined" ? (window as any).DiscordNative : {}
                 );
 

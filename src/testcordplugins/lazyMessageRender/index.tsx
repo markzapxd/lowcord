@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { enableStyle, disableStyle, setStyleClassNames } from "@api/Styles";
+import { disableStyle, enableStyle, setStyleClassNames } from "@api/Styles";
 import { TestcordDevs } from "@utils/constants";
 import definePlugin from "@utils/types";
 import { findCssClassesLazy } from "@webpack";
@@ -15,7 +15,7 @@ const classes = findCssClassesLazy("messageListItem");
 
 export default definePlugin({
     name: "LazyMessageRender",
-    description: "Skips layout and paint for offscreen messages using CSS content-visibility, reducing lag in large servers.",
+    description: "Prevents message action toolbar from clipping under the message above. content-visibility was removed — Discord's virtualized scroller mis-measures contained rows after recent updates.",
     authors: [TestcordDevs.x2b],
 
     start() {

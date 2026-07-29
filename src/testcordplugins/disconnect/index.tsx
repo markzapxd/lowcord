@@ -7,7 +7,7 @@
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { definePluginSettings, useSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import { classes } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import type { Channel, User } from "@vencord/discord-types";
@@ -241,6 +241,8 @@ export default definePlugin({
                 <HeaderBarIcon
                     tooltip={`Disconnect user: ${current?.username ?? disconnectUserId} (right-click to disable)`}
                     icon={UnfollowIcon}
+                    className="vc-plugin-icon-button"
+                    iconClassName="vc-plugin-icon-button"
                     onClick={() => { }}
                     onContextMenu={e => {
                         e.preventDefault();
@@ -269,8 +271,3 @@ export default definePlugin({
         }
     },
 });
-
-
-
-
-

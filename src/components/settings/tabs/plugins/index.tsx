@@ -28,8 +28,8 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { HeadingTertiary } from "@components/Heading";
 import { Paragraph } from "@components/Paragraph";
 import { SettingsTab } from "@components/settings";
-import { debounce } from "@shared/debounce";
 import { ChangeList } from "@utils/ChangeList";
+import { Devs, EquicordDevs, TestcordDevs } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
 import { isTruthy } from "@utils/guards";
 import { Logger } from "@utils/Logger";
@@ -41,7 +41,6 @@ import { Alerts, ConfirmModal, lodash, openModal, Parser, React, SearchableSelec
 import { JSX } from "react";
 
 import Plugins, { ExcludedPlugins, PluginMeta } from "~plugins";
-import { Devs, EquicordDevs, TestcordDevs } from "@utils/constants";
 
 import { PluginCard } from "./PluginCard";
 import { openWarningModal } from "./PluginModal";
@@ -50,6 +49,9 @@ import { UIElementsButton } from "./UIElements";
 
 export const cl = classNameFactory("vc-plugins-");
 export const logger = new Logger("PluginSettings", "#a6d189");
+
+const PluginSearchPrefixes = ["tcp:", "testcordplugin:"];
+const PluginLoadBatchSize = 36;
 
 function showErrorToast(message: string) {
     Toasts.show({
@@ -65,51 +67,55 @@ function showErrorToast(message: string) {
 function ReloadRequiredCard({ required, enabledPlugins, openWarningModal, resetCheckAndDo }) {
     return (
         <Card className={classes(cl("info-card"), required && "vc-warning-card")}>
-            {required ? (
-                <>
-                    <HeadingTertiary>Restart required!</HeadingTertiary>
-                    <Paragraph className={cl("dep-text")}>
-                        Restart now to apply new plugins and their settings
-                    </Paragraph>
+            <div className={cl("info-card-content")}>
+                {required ? (
+                    <>
+                        <HeadingTertiary>Restart required</HeadingTertiary>
+                        <Paragraph className={cl("dep-text")}>
+                            Restart now to apply plugin and setting changes.
+                        </Paragraph>
+                    </>
+                ) : (
+                    <>
+                        <HeadingTertiary>Plugin Management</HeadingTertiary>
+                        <Paragraph>Search, filter, enable, and configure plugins from one place.</Paragraph>
+                        <Paragraph>Use the info button to view details, or the cog button to edit settings.</Paragraph>
+                    </>
+                )}
+            </div>
+            <div className={cl("info-card-actions")}>
+                {required ? (
                     <Button variant="primary" className={cl("restart-button")} onClick={() => location.reload()}>
                         Restart
                     </Button>
-                </>
-            ) : (
-                <>
-                    <HeadingTertiary>Plugin Management</HeadingTertiary>
-                    <Paragraph>Press the cog wheel or info icon to get more info on a plugin</Paragraph>
-                    <Paragraph>Plugins with a cog wheel have settings you can modify!</Paragraph>
-                </>
-            )}
-            {enabledPlugins.length > 0 && !required && (
-                <Button
-                    variant="secondary"
-                    size="small"
-                    className={"vc-plugins-disable-warning vc-modal-align-reset"}
-                    onClick={() => {
-                        return openWarningModal(null, undefined, false, enabledPlugins.length, resetCheckAndDo);
-                    }}
-                >
-                    Disable All Plugins
-                </Button>
-            )}
+                ) : enabledPlugins.length > 0 && (
+                    <Button
+                        variant="secondary"
+                        size="small"
+                        className={"vc-plugins-disable-warning vc-modal-align-reset"}
+                        onClick={() => openWarningModal(null, undefined, false, enabledPlugins.length, resetCheckAndDo)}
+                    >
+                        Disable All Plugins
+                    </Button>
+                )}
+            </div>
         </Card>
     );
 }
 
 const SearchStatus = {
     ALL: 0,
-    ENABLED: 1,
-    DISABLED: 2,
-    EQUICORD: 3,
-    TESTCORD: 4,
-    VENCORD: 5,
-    NEW: 6,
-    USER_PLUGINS: 7,
-    API_PLUGINS: 8,
-    BETTERDISCORD: 9,
-    LOWCORD: 10,
+    FAVORITES: 1,
+    ENABLED: 2,
+    DISABLED: 3,
+    EQUICORD: 4,
+    TESTCORD: 5,
+    VENCORD: 6,
+    NEW: 7,
+    USER_PLUGINS: 8,
+    API_PLUGINS: 9,
+    BETTERDISCORD: 10,
+    LOWCORD: 11,
 } as const;
 
 type SearchStatus = typeof SearchStatus[keyof typeof SearchStatus];
@@ -176,10 +182,10 @@ export default function PluginSettings() {
                         <p>The following plugins require a restart:</p>
                         <div>
                             {displayed.map((s, i) => (
-                                <span key={i}>
+                                <React.Fragment key={i}>
                                     {i > 0 && ", "}
                                     {Parser.parse("`" + s + "`")}
-                                </span>
+                                </React.Fragment>
                             ))}
                             {remainingCount > 0 && <span> and {remainingCount} more</span>}
                         </div>
@@ -203,15 +209,28 @@ export default function PluginSettings() {
         return o;
     }, []);
 
-    const sortedPlugins = useMemo(() => Object.values(Plugins)
+const sortedPlugins = useMemo(() =>
+    Object.values(Plugins)
         .filter(p => p.name)
-        .sort((a, b) => a.name.localeCompare(b.name)), []);
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .toSorted((a, b) => Number(settings.plugins[b.name]?.isFavorite ?? false) - Number(settings.plugins[a.name]?.isFavorite ?? false)),
+    []
+);
 
     const hasUserPlugins = useMemo(() => !IS_STANDALONE && Object.values(PluginMeta).some(m => m.userPlugin), []);
 
     const [searchValue, setSearchValue] = useState<{ value: string; tags: PluginTag[]; status: number; author: string; }>({ value: "", tags: [] as PluginTag[], status: SearchStatus.ALL, author: "" });
 
     const search = searchValue.value.toLowerCase();
+    const pluginSearch = useMemo(() => {
+        const trimmedSearch = search.trimStart();
+
+        for (const prefix of PluginSearchPrefixes) {
+            if (trimmedSearch.startsWith(prefix)) return trimmedSearch.slice(prefix.length).trim();
+        }
+
+        return null;
+    }, [search]);
     const onSearch = (query: string) => setSearchValue(prev => ({ ...prev, value: query }));
 
     const githubMap = useMemo(() => {
@@ -246,6 +265,9 @@ export default function PluginSettings() {
         const { status, tags } = searchValue;
 
         switch (status) {
+            case SearchStatus.FAVORITES:
+                if (!settings.plugins[plugin.name]?.isFavorite) return false;
+                break;
             case SearchStatus.DISABLED:
                 if (isPluginEnabled(plugin.name)) return false;
                 break;
@@ -285,15 +307,17 @@ export default function PluginSettings() {
 
         if (searchValue.author && !plugin.authors?.some(a => a?.name === searchValue.author)) return false;
 
-        if (!search.length) return true;
+        const pluginSearchValue = pluginSearch ?? search;
+
+        if (!pluginSearchValue.length) return true;
 
         return (
-            plugin.name.toLowerCase().includes(search.replace(/\s+/g, "")) ||
-            plugin.name.match(/[A-Z]/g)?.join("").toLowerCase().includes(search) || // acronyms like BF for BetterFolders
-            plugin.description.toLowerCase().includes(search) ||
-            plugin.searchTerms?.some(t => t.toLowerCase().includes(search))
+            plugin.name.toLowerCase().includes(pluginSearchValue.replace(/\s+/g, "")) ||
+            plugin.name.match(/[A-Z]/g)?.join("").toLowerCase().includes(pluginSearchValue) || // acronyms like BF for BetterFolders
+            plugin.description.toLowerCase().includes(pluginSearchValue) ||
+            plugin.searchTerms?.some(t => t.toLowerCase().includes(pluginSearchValue))
         );
-    }, [searchValue, search]);
+    }, [searchValue, search, pluginSearch]);
 
     const [newPluginsSet] = useAwaiter(() => DataStore.get("Vencord_existingPlugins").then((cachedPlugins: Record<string, number> | undefined) => {
         const now = Date.now() / 1000;
@@ -329,7 +353,7 @@ export default function PluginSettings() {
 
             if (isRequired) {
                 const tooltipText = p.required || !depMap[p.name]
-                    ? "This plugin is required for Equicord to function."
+                    ? "This plugin is required for Testcord to function."
                     : <PluginDependencyList deps={depMap[p.name]?.filter(d => settings.plugins[d].enabled)} />;
 
                 requiredPlugins.push(
@@ -413,20 +437,18 @@ export default function PluginSettings() {
         const enabledUserPlugins = enabledPlugins.filter(p => PluginMeta[p].userPlugin).length;
         return { totalStockPlugins, totalUserPlugins, enabledStockPlugins, enabledUserPlugins, enabledPlugins };
     }, [settings.plugins]);
-    const pluginsToLoad = Math.min(36, plugins.length);
+    const pluginsToLoad = Math.min(PluginLoadBatchSize, plugins.length);
     const [visibleCount, setVisibleCount] = React.useState(pluginsToLoad);
     const loadMore = React.useCallback(() => {
         setVisibleCount(v => Math.min(v + pluginsToLoad, plugins.length));
     }, [plugins.length]);
 
-    const dLoadMore = useMemo(() => debounce(loadMore, 100), [loadMore]);
-
     const [sentinelRef, isSentinelVisible] = useIntersection();
     React.useEffect(() => {
         if (isSentinelVisible && visibleCount < plugins.length) {
-            dLoadMore();
+            loadMore();
         }
-    }, [isSentinelVisible, visibleCount, plugins.length, dLoadMore]);
+    }, [isSentinelVisible, visibleCount, plugins.length, loadMore]);
 
     const visiblePlugins = plugins.slice(0, visibleCount);
     const authorGithub = searchValue.author ? ("https://github.com/" + (authorOptions.find(a => a.value === searchValue.author)?.github || searchValue.author)) : "";
@@ -469,6 +491,7 @@ export default function PluginSettings() {
                     <Select
                         options={[
                             { label: "Show All", value: SearchStatus.ALL, default: true },
+                            { label: "Show Favorites", value: SearchStatus.FAVORITES },
                             { label: "Show Enabled", value: SearchStatus.ENABLED },
                             { label: "Show Disabled", value: SearchStatus.DISABLED },
                             { label: "Show Equicord", value: SearchStatus.EQUICORD },
@@ -497,7 +520,7 @@ export default function PluginSettings() {
                     <SearchableSelect
                         options={[{ label: "All Authors", value: "" }, ...authorOptions]}
                         value={searchValue.author}
-                        onChange={(v) => setSearchValue(prev => ({ ...prev, author: v ?? "" }))}
+                        onChange={v => setSearchValue(prev => ({ ...prev, author: v ?? "" }))}
                         closeOnSelect={true}
                         placeholder="Filter by Author"
                     />
@@ -515,7 +538,7 @@ export default function PluginSettings() {
                 </div>
             </ErrorBoundary>
 
-            <HeadingTertiary className={classes(Margins.top20, Margins.bottom8)} style={{ marginTop: "3.5rem" }}>Plugins</HeadingTertiary>
+            <HeadingTertiary className={classes(Margins.top20, Margins.bottom8, cl("section-heading"))}>Plugins</HeadingTertiary>
 
             {plugins.length || requiredPlugins.length
                 ? (
@@ -558,22 +581,3 @@ export function PluginDependencyList({ deps }: { deps: string[]; }) {
         </>
     );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

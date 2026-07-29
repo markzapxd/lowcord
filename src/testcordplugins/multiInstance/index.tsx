@@ -1,27 +1,19 @@
 /*
- * Nightcord — MultiInstance plugin
- *
- * Left click on an account:
- *   → If token available: directly chooses "New window" or "Split" via the ctx menu
- *   → If no token: quick switch only
- *
- * Right click on an account: context menu (New window | Split screen | Close)
- *
- * The logic is:
- *   - Left CLICK with token → opens the context menu (same as right click)
- *     (we NO LONGER do location.reload on left click if the account has a token)
- *   - Left CLICK without token → classic quick switch
- *   - Right CLICK with token → context menu
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
+
+import "./styles.css";
 
 import { addHeaderBarButton, HeaderBarButton, removeHeaderBarButton } from "@api/HeaderBar";
 import { DataStore } from "@api/index";
-import definePlugin, { PluginNative } from "@utils/types";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, openModal } from "@utils/modal";
+import definePlugin, { PluginNative } from "@utils/types";
 import { findByProps } from "@webpack";
 import { Forms, React, ReactDOM, UserStore } from "@webpack/common";
+
 import { t } from "../autoTranslateNightcord";
-import "./styles.css";
 
 const Native = VencordNative.pluginHelpers.MultiInstance as PluginNative<typeof import("./native")>;
 const STORE_KEY = "TokenImporter_accounts";
@@ -285,12 +277,18 @@ function MultiInstanceModal({ rootProps }: { rootProps: any; }) {
     const [openInstances, setOpenInstances] = React.useState<string[]>([]);
     const [ctx, setCtx] = React.useState<CtxState | null>(null);
     const [status, setStatus] = React.useState<string | null>(null);
+    const mountedRef = React.useRef(true);
+    const statusTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
     React.useEffect(() => {
         captureCurrentToken();
-        DataStore.get<SavedAccount[]>(STORE_KEY).then(v => setSavedAccounts(v ?? []));
+        DataStore.get<SavedAccount[]>(STORE_KEY).then(v => { if (mountedRef.current) setSavedAccounts(v ?? []); });
         setNativeAccounts(getNativeAccounts());
-        Native.getOpenInstances().then(ids => setOpenInstances(ids ?? [])).catch(() => { });
+        Native.getOpenInstances().then(ids => { if (mountedRef.current) setOpenInstances(ids ?? []); }).catch(() => { });
+        return () => {
+            mountedRef.current = false;
+            if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+        };
     }, []);
 
     const allAccounts = React.useMemo<AccountEntry[]>(() => {
@@ -314,8 +312,17 @@ function MultiInstanceModal({ rootProps }: { rootProps: any; }) {
 
     const refreshInstances = async () => {
         const ids = await Native.getOpenInstances().catch(() => []);
+        if (!mountedRef.current) return;
         setOpenInstances(ids ?? []);
     };
+
+    function clearStatusLater() {
+        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = setTimeout(() => {
+            statusTimerRef.current = null;
+            if (mountedRef.current) setStatus(null);
+        }, 3000);
+    }
 
     const handleNewWindow = async (acc: AccountEntry) => {
         if (!acc.hasToken) return;
@@ -323,13 +330,14 @@ function MultiInstanceModal({ rootProps }: { rootProps: any; }) {
         setStatus(t("Opening window…"));
         // @ts-ignore - Passing the username
         const res = await Native.openInstanceWindow(acc.token, acc.id, false, acc.username).catch(() => ({ ok: false, error: "error" }));
+        if (!mountedRef.current) return;
         if ((res as any).ok) {
             setStatus(t("Window opened ✓"));
             await refreshInstances();
         } else {
             setStatus(`${t("Error:")} ` + ((res as any).error ?? t("unknown")));
         }
-        setTimeout(() => setStatus(null), 3000);
+        clearStatusLater();
     };
 
     const handleNewDetached = async (acc: AccountEntry) => {
@@ -338,13 +346,14 @@ function MultiInstanceModal({ rootProps }: { rootProps: any; }) {
         setStatus(t("Opening detached instance…"));
         // @ts-ignore - 'detached' argument and username added
         const res = await Native.openInstanceWindow(acc.token, acc.id, true, acc.username).catch(() => ({ ok: false, error: "error" }));
+        if (!mountedRef.current) return;
         if ((res as any).ok) {
             setStatus(t("Instance opened ✓"));
             await refreshInstances();
         } else {
             setStatus(`${t("Error:")} ` + ((res as any).error ?? t("unknown")));
         }
-        setTimeout(() => setStatus(null), 3000);
+        clearStatusLater();
     };
 
     const handleNewGrouped = async (acc: AccountEntry) => {
@@ -353,13 +362,14 @@ function MultiInstanceModal({ rootProps }: { rootProps: any; }) {
         setStatus(t("Opening grouped instance…"));
         // @ts-ignore
         const res = await Native.openInstanceWindowGrouped(acc.token, acc.id, acc.username).catch(() => ({ ok: false, error: "error" }));
+        if (!mountedRef.current) return;
         if ((res as any).ok) {
             setStatus(t("Instance opened ✓"));
             await refreshInstances();
         } else {
             setStatus(`${t("Error:")} ` + ((res as any).error ?? t("unknown")));
         }
-        setTimeout(() => setStatus(null), 3000);
+        clearStatusLater();
     };
 
     const openCtx = (e: React.MouseEvent, acc: AccountEntry) => {
@@ -416,7 +426,7 @@ function MultiInstanceModal({ rootProps }: { rootProps: any; }) {
                     ) : allAccounts.map(acc => {
                         const isOpen = openInstances.includes(acc.id);
                         const tagText = acc.hasToken
-                            ? (acc.isNative ? "🔗 Discord Account" : `🔑 Token`)
+                            ? (acc.isNative ? "🔗 Discord Account" : "🔑 Token")
                             : t("Switch only");
                         return (
                             <div

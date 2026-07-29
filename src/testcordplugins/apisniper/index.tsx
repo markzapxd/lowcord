@@ -78,7 +78,6 @@ const PATTERNS: Record<string, RegExp> = {
     slackToken: /\bxox[baprs]-[0-9a-zA-Z-]+\b/,
     slackWebhook: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+/i,
     telegramBotToken: /^\d+:[A-Za-z0-9_-]{35}$/,
-    herokuApiKey: /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/,
     stripeKey: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/,
     twilioKey: /\bSK[a-f0-9]{32}\b/,
     sendGridKey: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/,
@@ -127,6 +126,8 @@ const PATTERNS: Record<string, RegExp> = {
     redisUri: /\bredis(?:s)?:\/\/[^\s]+:[^\s]+@[^\s]+\b/i,
 };
 
+const PATTERN_ENTRIES = Object.entries(PATTERNS);
+
 interface SnipedCredential {
     username: string;
     userId: string;
@@ -139,9 +140,10 @@ interface SnipedCredential {
 }
 
 function checkForCredentials(content: string): Array<{ type: string; value: string; }> {
+    if (!couldContainCredential(content)) return [];
     const findings: Array<{ type: string; value: string; }> = [];
 
-    for (const [type, pattern] of Object.entries(PATTERNS)) {
+    for (const [type, pattern] of PATTERN_ENTRIES) {
         pattern.lastIndex = 0;
         const match = pattern.exec(content);
         if (match) {
@@ -152,6 +154,12 @@ function checkForCredentials(content: string): Array<{ type: string; value: stri
     }
 
     return findings;
+}
+
+const PREFILTER_RE = /[A-Z0-9_-]{20,}/;
+
+function couldContainCredential(content: string): boolean {
+    return content.length >= 30 && PREFILTER_RE.test(content);
 }
 
 async function handleSnipedCredential(credential: SnipedCredential) {
@@ -205,18 +213,31 @@ function shouldIgnoreMessage(msg: any): boolean {
     // Ignore own messages unless snipeOwnMessages is true
     if (msg.author.id === UserStore.getCurrentUser()?.id && !settings.store.snipeOwnMessages) return true;
 
-    // Check user blacklist
-    const blacklist = settings.store.userBlacklist
-        .split(",")
-        .map(id => id.trim())
-        .filter(id => id.length > 0);
-
-    if (blacklist.includes(msg.author.id)) return true;
+    if (getBlacklistSet().has(msg.author.id)) return true;
 
     return false;
 }
 
-const MAX_CACHE_ENTRIES = 5000;
+let blacklistCacheKey: string | undefined;
+let blacklistCache = new Set<string>();
+
+function getBlacklistSet(): Set<string> {
+    const raw = settings.store.userBlacklist;
+    if (raw !== blacklistCacheKey) {
+        blacklistCacheKey = raw;
+        blacklistCache = new Set(
+            raw
+                .split(",")
+                .map(id => id.trim())
+                .filter(id => id.length > 0)
+        );
+    }
+    return blacklistCache;
+}
+
+const MAX_CACHE_ENTRIES = 1000;
+const PRUNE_INTERVAL_MS = 60 * 1000;
+let lastPruneTime = 0;
 
 function pruneProcessedMessages(now: number) {
     for (const [id, seen] of processedMessages) {
@@ -235,13 +256,16 @@ function pruneProcessedMessages(now: number) {
 
 function processMessage(msg: any, channelId: string) {
     if (shouldIgnoreMessage(msg)) return;
+    if (!couldContainCredential(msg.content)) return;
 
-    // Deduplicate by message ID
     const msgId = msg.id;
     const now = Date.now();
     const lastSeen = processedMessages.get(msgId);
     if (lastSeen && now - lastSeen < CACHE_TTL) return;
-    pruneProcessedMessages(now);
+    if (now - lastPruneTime > PRUNE_INTERVAL_MS) {
+        lastPruneTime = now;
+        pruneProcessedMessages(now);
+    }
     processedMessages.set(msgId, now);
 
     const findings = checkForCredentials(msg.content);
@@ -297,5 +321,6 @@ export default definePlugin({
 
     stop() {
         processedMessages.clear();
+        lastPruneTime = 0;
     },
 });

@@ -50,7 +50,7 @@ export function NewPluginsSection({
     const mapPlugins = (array: string[]) =>
         array
             .map(pn => Plugins[pn])
-            .filter(p => p && !p.hidden)
+            .filter(p => p && !p.hidden && typeof p.name === "string")
             .sort((a, b) => a.name.localeCompare(b.name));
 
     const sortedPlugins = React.useMemo(
@@ -95,7 +95,7 @@ export function NewPluginsSection({
                         ) ||
                         plugin.name.endsWith("API");
                     const tooltipText = plugin.required
-                        ? "This plugin is required for Equicord to function."
+                        ? "This plugin is required for Testcord to function."
                         : makeDependencyList(
                             depMap[plugin.name]?.filter(
                                 d => settings.plugins[d].enabled,
@@ -196,14 +196,14 @@ function CompactPluginCard({
     settings: any;
 }) {
     const plugin = Plugins[pluginName];
-    if (!plugin || plugin.hidden) return null;
+    if (!plugin || plugin.hidden || typeof plugin.name !== "string") return null;
 
     const isRequired =
         plugin.required ||
         depMap[plugin.name]?.some(d => settings.plugins[d].enabled);
 
     const tooltipText = plugin.required
-        ? "This plugin is required for Equicord to function."
+        ? "This plugin is required for Testcord to function."
         : depMap[plugin.name]?.length > 0
             ? `This plugin is required by: ${depMap[plugin.name]
                 ?.filter(d => settings.plugins[d].enabled)

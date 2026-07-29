@@ -1,13 +1,18 @@
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { useSettings } from "@api/Settings";
 import { classNameFactory } from "@api/Styles";
+import { ChangeList } from "@utils/ChangeList";
+import { TestcordDevs } from "@utils/constants";
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import definePlugin from "@utils/types";
-import { Button, Forms, React, Text, TextInput, useMemo, Switch } from "@webpack/common";
+import { Alerts, Button, Forms, Parser, React, Switch,Text, TextInput, Tooltip, useMemo } from "@webpack/common";
+
 import Plugins from "~plugins";
-import { ChangeList } from "@utils/ChangeList";
-import { Alerts, Parser, Tooltip } from "@webpack/common";
-import { JSX } from "react";
-import { TestcordDevs } from "@utils/constants";
 
 const cl = classNameFactory("atticus-plugins-");
 
@@ -113,7 +118,7 @@ export function PluginListModal({ modalProps }: { modalProps: ModalProps; }) {
                 if (!plugin?.name) return false;
 
                 // Only show plugins authored by "dot" or "dot"
-                const allowedAuthors = ['dot', 'dot'];
+                const allowedAuthors = ["dot", "dot"];
                 const hasAllowedAuthor = plugin.authors?.some(author =>
                     allowedAuthors.some(allowedAuthor =>
                         author.name.toLowerCase() === allowedAuthor.toLowerCase()
@@ -154,7 +159,7 @@ export function PluginListModal({ modalProps }: { modalProps: ModalProps; }) {
         ).length;
     }, [allPlugins, settings.plugins]);
 
-    const handleSearchChange = (e) => {
+    const handleSearchChange = e => {
         setSearchQuery(e);
     };
 
@@ -277,7 +282,7 @@ function makeDependencyList(deps: string[]) {
     return (
         <React.Fragment>
             <Forms.FormText>This plugin is required by:</Forms.FormText>
-            {deps.map((dep: string) => <Forms.FormText key={cl("dep-text")} className={cl("dep-text")}>{dep}</Forms.FormText>)}
+            {deps.map((dep: string) => <Forms.FormText key={dep} className={cl("dep-text")}>{dep}</Forms.FormText>)}
         </React.Fragment>
     );
 }
@@ -287,7 +292,7 @@ export function openPluginList() {
 }
 
 function keybind(e: KeyboardEvent) {
-    if (e.altKey && e.key.toLowerCase() === 'x') {
+    if (e.altKey && e.key.toLowerCase() === "x") {
         openPluginList();
     }
 }
@@ -298,9 +303,9 @@ export default definePlugin({
     tags: ["Utility", "Developers"],
     authors: [TestcordDevs.dot],
     start() {
-        document.addEventListener('keydown', keybind);
+        document.addEventListener("keydown", keybind);
     },
     stop() {
-        document.removeEventListener('keydown', keybind);
+        document.removeEventListener("keydown", keybind);
     }
 });

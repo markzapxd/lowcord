@@ -13,7 +13,6 @@ import { TestcordDevs } from "@utils/constants";
 import { getStegCloak } from "@utils/dependencies";
 import { Logger } from "@utils/Logger";
 import definePlugin, { IconComponent, OptionType } from "@utils/types";
-import { findExportedComponentLazy } from "@webpack";
 import { FluxDispatcher } from "@webpack/common";
 
 const logger = new Logger("GoofcordSecurity");
@@ -193,6 +192,7 @@ function unpatchWebRtc() {
 // ────────────────────────────────────────────────────────────── stegcloak
 
 let steggo: any = null;
+let startToken = 0;
 
 // matches strings produced by StegCloak (zero-width chars)
 const INV_REGEX = /( \u200c|\u200d |[\u2060-\u2064])[^\u200b]/;
@@ -269,6 +269,7 @@ function onMessageCreate(event: { message: any; }) {
     if (!settings.store.autoDecrypt || !settings.store.messageEncryption) return;
     const m = event.message;
     if (!m?.content || typeof m.content !== "string") return;
+    if (!m.content.includes(settings.store.encryptionMark)) return;
     if (!INV_REGEX.test(m.content)) return;
     const decrypted = tryDecrypt(m.content);
     if (!decrypted) return;
@@ -283,13 +284,14 @@ export default definePlugin({
         "Ports GoofCord's privacy & security features: telemetry firewall, CSP unstricter, Chrome UA spoofer, Invidious embeds, anti-tracking headers, WebRTC leak prevention, and StegCloak message encryption.",
     tags: ["Privacy", "Utility"],
     authors: [TestcordDevs.sirphantom89],
-    dependencies: ["MessageEventsAPI", "MessageUpdaterAPI", "ChatInputButtonAPI"],
+    dependencies: ["MessageEventsAPI", "MessageUpdaterAPI", "ChatInputButtonAPI", "HeaderBarAPI"],
     settings,
 
     // exported so native.ts can see toggles, and for debugging
     INV_REGEX,
 
     async start() {
+        const token = ++startToken;
         if (settings.store.webRtcLeakPrevent) {
             try { patchWebRtc(); } catch (e) { logger.error("WebRTC patch failed:", e); }
         }
@@ -297,6 +299,7 @@ export default definePlugin({
         if (settings.store.messageEncryption) {
             try {
                 await ensureStegCloak();
+                if (token !== startToken) return;
                 addChatBarButton("GoofcordSecurityEncrypt", ChatBarIcon, LockIcon);
                 addMessagePreSendListener(onSend);
                 FluxDispatcher.subscribe("MESSAGE_CREATE", onMessageCreate);
@@ -327,6 +330,7 @@ export default definePlugin({
     },
 
     stop() {
+        startToken++;
         unpatchWebRtc();
         removeChatBarButton("GoofcordSecurityEncrypt");
         removeHeaderBarButton("GoofcordSecurity");

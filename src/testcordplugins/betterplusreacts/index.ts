@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import definePlugin from "@utils/types";
 import { findByPropsLazy } from "@webpack";
 
@@ -59,8 +59,3 @@ export default definePlugin({
         this.message = getMessages(channelId).getByIndex(getMessages(channelId).length - plusses.split("+").length + 1);
     }
 });
-
-
-
-
-

@@ -6,10 +6,11 @@
 
 import { ChatBarButton } from "@api/ChatButtons";
 import { addChannelToolbarButton, addHeaderBarButton, ChannelToolbarButton, HeaderBarButton, removeChannelToolbarButton, removeHeaderBarButton } from "@api/HeaderBar";
+import { TestcordRequestCoordinator } from "@api/index";
 import { definePluginSettings } from "@api/Settings";
 import { Card } from "@components/Card";
-import { IpcEvents } from "@shared/IpcEvents";
 import { TestcordDevs } from "@utils/constants";
+import { sleep as wait } from "@utils/misc";
 import { closeModal, ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { showItemInFolder } from "@utils/native";
 import definePlugin, { OptionType } from "@utils/types";
@@ -103,22 +104,26 @@ function setWhitelist(ids: string[]) {
     settings.store.whitelist = ids.join(",");
 }
 
-async function wait(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 async function fetchAllMessages(channelId: string, throttleMs = 250, onProgress?: (count: number) => void): Promise<Message[]> {
     const result: Message[] = [] as any;
     let before: string | undefined = undefined;
 
     while (true) {
-        const res = await RestAPI.get({
-            url: Constants.Endpoints.MESSAGES(channelId),
-            query: { limit: 100, ...(before ? { before } : {}) },
-            retries: 2
-        }).catch(() => null as any);
+        const batch = await TestcordRequestCoordinator.request<Message[]>({
+            key: `discord:messages:${channelId}:before:${before ?? ""}:limit:100`,
+            ttlMs: 30_000,
+            run: async () => {
+                const res = await RestAPI.get({
+                    url: Constants.Endpoints.MESSAGES(channelId),
+                    query: { limit: 100, ...(before ? { before } : {}) },
+                    retries: 2
+                }).catch(() => null as any);
 
-        const batch = res?.body ?? [];
+                return res?.body ?? [];
+            },
+            cacheable: Array.isArray,
+        });
+
         if (!batch.length) break;
         result.push(...batch);
         before = batch[batch.length - 1].id;
@@ -604,6 +609,7 @@ function WhitelistModal({ modalProps }: { modalProps: ModalProps; }) {
                         await RestAPI.del({
                             url: `${Constants.Endpoints.MESSAGES(ch.id)}/${m.id}`
                         });
+                        TestcordRequestCoordinator.invalidatePrefix(`discord:messages:${ch.id}:`);
                         deletedCount++;
                         processedCount++;
                         progress.incrementDeleted();
@@ -996,6 +1002,7 @@ export default definePlugin({
     description: "Delete your own messages in DMs or servers with a beautiful progress interface. Logs each run to JSON.",
     tags: ["Chat", "Utility"],
     authors: [TestcordDevs.x2b],
+    dependencies: ["HeaderBarAPI"],
     settings,
     start() {
         window.addEventListener("vencord:openMessageScrapper", handleOpenMessageScrapper);

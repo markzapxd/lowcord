@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import definePlugin from "@utils/types";
 
 import FriendCodesPanel from "./components/FriendCodesPanel";
@@ -14,22 +14,9 @@ export default definePlugin({
     description: "Generate FriendCodes to easily add friends",
     tags: ["Friends", "Utility"],
     authors: [TestcordDevs.x2b, TestcordDevs.nnenaza],
-    patches: [
-        {
-            find: ".Messages.ADD_FRIEND}),(",
-            replacement: {
-                match: /\.Fragment[^]*?children:\[[^]*?}\)/,
-                replace: "$&,$self.FriendCodesPanel"
-            }
-        }
-    ],
+    patches: [],
 
     get FriendCodesPanel() {
         return <FriendCodesPanel />;
     }
 });
-
-
-
-
-

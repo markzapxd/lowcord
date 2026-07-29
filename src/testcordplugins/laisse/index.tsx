@@ -5,20 +5,20 @@
  */
 
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
-import { definePluginSettings } from "@api/Settings";
 import { showNotification } from "@api/Notifications";
-import { findByPropsLazy, findStoreLazy } from "@webpack";
-import {
-    Menu,
-    React,
-    VoiceStateStore,
-    RestAPI,
-    SelectedGuildStore,
-    Constants,
-} from "@webpack/common";
+import { definePluginSettings } from "@api/Settings";
+import { TestcordDevs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { User, VoiceState } from "@vencord/discord-types";
-import { TestcordDevs } from "@utils/constants";
+import { findByPropsLazy, findStoreLazy } from "@webpack";
+import {
+    Constants,
+    Menu,
+    React,
+    RestAPI,
+    SelectedGuildStore,
+    VoiceStateStore,
+} from "@webpack/common";
 
 type TLeashedUserInfo = {
     userId: string;
@@ -94,21 +94,16 @@ const UserContextMenuPatch: NavContextMenuPatchCallback = (
     { channel, user }: UserContextProps
 ) => {
     if (UserStore.getCurrentUser().id === user.id) return;
-
-    const [checked, setChecked] = React.useState(
-        leashedUserInfo?.userId === user.id
-    );
-
+    const isLeashed = leashedUserInfo?.userId === user.id;
     children.push(
         <Menu.MenuSeparator />,
         <Menu.MenuCheckboxItem
             id="laisse-leash-user"
             label="Leash - Hook the user"
-            checked={checked}
+            checked={isLeashed}
             action={() => {
                 if (leashedUserInfo?.userId === user.id) {
                     leashedUserInfo = null;
-                    setChecked(false);
                     showNotification({
                         title: "Leash",
                         body: `User ${user.username} is no longer hooked`,
@@ -120,7 +115,6 @@ const UserContextMenuPatch: NavContextMenuPatchCallback = (
                     userId: user.id,
                     lastChannelId: null,
                 };
-                setChecked(true);
                 showNotification({
                     title: "Leash",
                     body: `User ${user.username} is now hooked to you`,
@@ -210,8 +204,3 @@ export default definePlugin({
         myLastChannelId = null;
     },
 });
-
-
-
-
-

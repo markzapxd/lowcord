@@ -1,15 +1,11 @@
 /*
- * Nightcord — MultiInstance native.ts
- *
- * Token injection: robust method via session setPreloads.
- * We create a TEMPORARY preload script in a file that
- * we pass to ses.setPreloads([...]) — this script runs in
- * the main world BEFORE any page JS, guaranteeing that
- * localStorage.token is set before Discord reads it.
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { BrowserWindow, screen, session, nativeImage, app, ipcMain, systemPreferences, Session } from "electron";
-import { writeFileSync, mkdirSync, existsSync } from "fs";
+import { app, BrowserWindow, ipcMain, screen, Session,session, systemPreferences } from "electron";
+import { existsSync,mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 
 // Inlined from nightcord/main/mediaPermissions.ts
@@ -60,28 +56,28 @@ function registerWindowControlIpc(win: BrowserWindow): () => void {
     const wc = win.webContents as any; // webContents.ipc existe depuis Electron 20
 
     // Native Discord channels (discovered in _core_extracted/bundle.js)
-    const CLOSE     = "DISCORD_WINDOW_CLOSE";
-    const MINIMIZE  = "DISCORD_WINDOW_MINIMIZE";
-    const MAXIMIZE  = "DISCORD_WINDOW_MAXIMIZE";
-    const RESTORE   = "DISCORD_WINDOW_RESTORE";
+    const CLOSE = "DISCORD_WINDOW_CLOSE";
+    const MINIMIZE = "DISCORD_WINDOW_MINIMIZE";
+    const MAXIMIZE = "DISCORD_WINDOW_MAXIMIZE";
+    const RESTORE = "DISCORD_WINDOW_RESTORE";
     const FULLSCREEN = "DISCORD_WINDOW_TOGGLE_FULLSCREEN";
 
     // webContents.ipc.handle takes priority over ipcMain.handle for this sender
-    const handleClose     = () => { if (!win.isDestroyed()) win.close(); };
-    const handleMinimize  = () => { if (!win.isDestroyed()) win.minimize(); };
-    const handleMaximize  = () => {
+    const handleClose = () => { if (!win.isDestroyed()) win.close(); };
+    const handleMinimize = () => { if (!win.isDestroyed()) win.minimize(); };
+    const handleMaximize = () => {
         if (win.isDestroyed()) return;
         if (win.isMaximized()) win.unmaximize(); else win.maximize();
     };
-    const handleRestore   = () => { if (!win.isDestroyed()) win.restore(); };
+    const handleRestore = () => { if (!win.isDestroyed()) win.restore(); };
     const handleFullscreen = () => { if (!win.isDestroyed()) win.setFullScreen(!win.isFullScreen()); };
 
     try {
         // webContents.ipc.handle (Electron 20+)
-        wc.ipc.handle(CLOSE,      handleClose);
-        wc.ipc.handle(MINIMIZE,   handleMinimize);
-        wc.ipc.handle(MAXIMIZE,   handleMaximize);
-        wc.ipc.handle(RESTORE,    handleRestore);
+        wc.ipc.handle(CLOSE, handleClose);
+        wc.ipc.handle(MINIMIZE, handleMinimize);
+        wc.ipc.handle(MAXIMIZE, handleMaximize);
+        wc.ipc.handle(RESTORE, handleRestore);
         wc.ipc.handle(FULLSCREEN, handleFullscreen);
     } catch {
         // Fallback: global ipcMain.handle with sender filter
@@ -100,10 +96,10 @@ function registerWindowControlIpc(win: BrowserWindow): () => void {
         ipcMain.removeHandler(MAXIMIZE);
         ipcMain.removeHandler(RESTORE);
         // DO NOT register FULLSCREEN - handled globally by the patcher
-        ipcMain.handle(CLOSE,     guardedHandle(handleClose));
-        ipcMain.handle(MINIMIZE,  guardedHandle(handleMinimize));
-        ipcMain.handle(MAXIMIZE,  guardedHandle(handleMaximize));
-        ipcMain.handle(RESTORE,   guardedHandle(handleRestore));
+        ipcMain.handle(CLOSE, guardedHandle(handleClose));
+        ipcMain.handle(MINIMIZE, guardedHandle(handleMinimize));
+        ipcMain.handle(MAXIMIZE, guardedHandle(handleMaximize));
+        ipcMain.handle(RESTORE, guardedHandle(handleRestore));
         return () => {
             ipcMain.removeHandler(CLOSE);
             ipcMain.removeHandler(MINIMIZE);
@@ -128,9 +124,19 @@ function registerWindowControlIpc(win: BrowserWindow): () => void {
 // Creates the preload script that injects the token
 // ─────────────────────────────────────────────────────────────────────────────
 
-function createTokenPreload(token: string): string {
-    // Temporary directory in userData
-    const dir = join(app.getPath("userData"), "nightcord-mi-preloads");
+function preloadDir() {
+    return join(app.getPath("userData"), "nightcord-mi-preloads");
+}
+
+// The preload embeds the account's token in plaintext and the session re-reads it from disk
+// on every frame, so it has to outlive the window. One file per account, deleted on close,
+// instead of a new timestamped file left behind on every open.
+function deleteTokenPreload(userId: string) {
+    rmSync(join(preloadDir(), `token-preload-${userId}.js`), { force: true });
+}
+
+function createTokenPreload(token: string, userId: string): string {
+    const dir = preloadDir();
     mkdirSync(dir, { recursive: true });
 
     const safeToken = JSON.stringify(token); // properly escapes the token
@@ -165,8 +171,8 @@ function createTokenPreload(token: string): string {
 })();
 `;
 
-    const filePath = join(dir, `token-preload-${Date.now()}.js`);
-    writeFileSync(filePath, script, "utf-8");
+    const filePath = join(dir, `token-preload-${userId}.js`);
+    writeFileSync(filePath, script, { encoding: "utf-8", mode: 0o600 });
     return filePath;
 }
 
@@ -181,7 +187,7 @@ let iconCounter = 1;
 function getDetachedIconDir(): string {
     // In production: {app_dir}/multi-instance-icons/
     // In dev: Desktop/lolll/
-    const exeDir = join(process.execPath, "..")
+    const exeDir = join(process.execPath, "..");
     const prodDir = join(exeDir, "multi-instance-icons");
     if (existsSync(prodDir)) return prodDir;
     // Fallback dev : Desktop/lolll
@@ -234,7 +240,7 @@ export async function openInstanceWindow(
 
         registerMediaPermissionsForSession(ses);
 
-        const preloadPath = createTokenPreload(token);
+        const preloadPath = createTokenPreload(token, userId);
         ses.setPreloads([preloadPath]);
 
         const win = new BrowserWindow({
@@ -311,6 +317,7 @@ export async function openInstanceWindow(
 
         win.once("closed", () => {
             cleanupIpc();
+            deleteTokenPreload(userId);
             openWindows.delete(userId);
             // Clean up the session's service workers to permanently cut notifications
             ses.clearStorageData({ storages: ["serviceworkers"] }).catch(() => {});
@@ -394,7 +401,7 @@ export async function openInstanceWindowGrouped(
 
         registerMediaPermissionsForSession(ses);
 
-        const preloadPath = createTokenPreload(token);
+        const preloadPath = createTokenPreload(token, userId);
         ses.setPreloads([preloadPath]);
 
         const win = new BrowserWindow({
@@ -452,6 +459,7 @@ export async function openInstanceWindowGrouped(
 
         win.once("closed", () => {
             cleanupIpc();
+            deleteTokenPreload(userId);
             openGroupedWindows.delete(userId);
             ses.clearStorageData({ storages: ["serviceworkers"] }).catch(() => {});
         });

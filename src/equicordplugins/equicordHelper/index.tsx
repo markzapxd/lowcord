@@ -12,7 +12,7 @@ import { definePluginSettings, migratePluginToSettings, Settings } from "@api/Se
 import { ShieldIcon, WarningIcon } from "@components/Icons";
 import customRPC from "@plugins/customRPC";
 import { Devs, EquicordDevs, GUILD_ID, SUPPORT_CHANNEL_ID, SUPPORT_CHANNEL_IDS, VC_SUPPORT_CHANNEL_IDS } from "@utils/constants";
-import { isAnyPluginDev } from "@utils/misc";
+import { isAnyPluginDev, isEquicordGuild } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import { StandingState } from "@vencord/discord-types/enums";
 import { findByCodeLazy, findStoreLazy } from "@webpack";
@@ -155,7 +155,8 @@ export default definePlugin({
         EquicordDevs.mart,
         EquicordDevs.omaw,
         Devs.Samwich,
-        Devs.AutumnVN
+        Devs.AutumnVN,
+        EquicordDevs.auggeeo
     ],
     required: true,
     settings,
@@ -177,14 +178,6 @@ export default definePlugin({
                     replace: "return $1;"
                 }
             ]
-        },
-        // Fixes crashing with unknown gift styles
-        {
-            find: "Unexpected giftStyle",
-            replacement: {
-                match: /throw Error\(`Unexpected giftStyle \$\{(\i)\}`\);/,
-                replace: "console.warn(`Unexpected giftStyle $${$1}`);"
-            }
         },
         // Fix a race condition
         {
@@ -357,8 +350,19 @@ export default definePlugin({
             ],
             predicate: () => settings.store.hideVoiceIndicatorForMutedChannels,
         },
+        // Add opening profile functionality to some connections
+        {
+            find: "getPlatformUserUrl:",
+            replacement: [
+                {
+                    match: /name:("(?:Xbox|Epic Games)").{0,180}enabled:!0/g,
+                    replace: "$&,getPlatformUserUrl:e=>$self.getPlatformUrl($1, e)"
+                }
+            ]
+        },
     ],
     renderMessageAccessory(props) {
+        if (!isEquicordGuild(props.message.channel_id)) return null;
         return (
             <>
                 <PluginButtons message={props.message} />
@@ -430,6 +434,16 @@ export default definePlugin({
             voiceState?.channelId === currentUserVoiceState?.channelId ||
             !UserGuildSettingsStore.isChannelMuted(guildId, voiceState?.channelId!)
         );
+    },
+    getPlatformUrl(platform, args) {
+        switch (platform) {
+            case "Xbox":
+                return `https://www.xbox.com/play/user/${encodeURIComponent(args.name)}`;
+            case "Epic Games":
+                return `https://store.epicgames.com/u/${encodeURIComponent(args.id)}`;
+            default:
+                return null;
+        }
     }
 });
 

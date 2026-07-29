@@ -16,7 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { addChatBarButton, ChatBarButton, removeChatBarButton } from "@api/ChatButtons";
+import { ChatBarButton, removeChatBarButton } from "@api/ChatButtons";
 import { ApplicationCommandInputType, ApplicationCommandOptionType, findOption, sendBotMessage } from "@api/Commands";
 import { addChannelToolbarButton, addHeaderBarButton, ChannelToolbarButton, HeaderBarButton, removeChannelToolbarButton, removeHeaderBarButton } from "@api/HeaderBar";
 import { definePluginSettings } from "@api/Settings";
@@ -67,8 +67,10 @@ const SilentTypingIcon = ({ width = 24, height = 24 }: { width?: number; height?
     </svg>
 );
 
+const SILENT_TYPING_KEYS = ["isEnabled", "showIcon", "specificChats", "disabledFor"] as const;
+
 const SilentTypingToggle: any = ({ isMainChat, channel }: any) => {
-    const { isEnabled, showIcon, specificChats, disabledFor } = settings.use(["isEnabled", "showIcon", "specificChats", "disabledFor"]);
+    const { isEnabled, showIcon, specificChats, disabledFor } = settings.use(SILENT_TYPING_KEYS);
     const id = channel.guild_id ?? channel.id;
 
     const toggleGlobal = () => {
@@ -154,7 +156,7 @@ export default definePlugin({
     authors: [TestcordDevs.x2b],
     description: "Hide that you are typing",
     tags: ["Chat", "Privacy"],
-    dependencies: ["ChatInputButtonAPI"],
+    dependencies: ["ChatInputButtonAPI", "HeaderBarAPI"],
     settings,
 
     patches: [
@@ -224,8 +226,3 @@ export default definePlugin({
         removeChannelToolbarButton("SilentTyping");
     },
 });
-
-
-
-
-

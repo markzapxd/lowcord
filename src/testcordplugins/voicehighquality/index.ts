@@ -5,7 +5,6 @@
  */
 
 import { definePluginSettings } from "@api/Settings";
-import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 
 const settings = definePluginSettings({
@@ -97,22 +96,22 @@ export default definePlugin({
         {
             find: "x-google-max-bitrate",
             replacement: {
-                match: /"x-google-max-bitrate=".concat\(\i\)/,
-                replace: '"x-google-max-bitrate=".concat($self.getAudioBitrate()*1000)'
+                match: /x-google-max-bitrate=\$\{(\i)\}/,
+                replace: (_, varName) => `x-google-max-bitrate=\${$self.getAudioBitrate()*1000}`
             }
         },
         {
-            find: "b=AS:",
+            find: "b=AS:${",
             replacement: {
-                match: /b=AS:\d+/,
-                replace: "b=AS:$self.getAudioBitrate()*1000"
+                match: /b=AS:\$\{Math\.floor\(this\.bitrate\/1e3\)\}/,
+                replace: `b=AS:\${$self.getAudioBitrate()}`
             }
         },
         {
-            find: "priority:",
+            find: 'priority:"low"',
             replacement: {
                 match: /priority:"low"/,
-                replace: 'priority:$self.getAudioPriority()'
+                replace: "priority:$self.getAudioPriority()"
             }
         },
         {

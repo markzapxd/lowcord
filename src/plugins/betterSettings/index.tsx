@@ -15,8 +15,8 @@ import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType } from "@utils/types";
 import { Icon } from "@vencord/discord-types";
 import { findCssClassesLazy } from "@webpack";
-import { ComponentDispatch, FocusLock, Menu, useEffect, useRef } from "@webpack/common";
-import type { HTMLAttributes, ReactNode } from "react";
+import { ComponentDispatch, FocusLock, Menu, useRef } from "@webpack/common";
+import type { HTMLAttributes, ReactElement, ReactNode } from "react";
 
 import fullHeightStyle from "./fullHeightContext.css?managed";
 
@@ -29,7 +29,7 @@ const SECTION_ICONS: Record<string, Icon> = {
     equicord_section: EquicordIcon,
     billing_section: CreditCardIcon,
     app_section: AppsIcon,
-    activity_section: GameControllerIcon,
+    games_and_apps_section: GameControllerIcon,
     developer_section: HammerAndChiselIcon,
     utility_section: MainSettingsIcon,
     playgrounds: AchievementsIcon,
@@ -62,17 +62,11 @@ interface LayerProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 function Layer({ mode, baseLayer = false, ...props }: LayerProps) {
+    const containerRef = useRef(null);
     const hidden = mode === "HIDDEN";
-    const containerRef = useRef<HTMLDivElement>(null);
-
-    useEffect(() => () => {
-        ComponentDispatch.dispatch("LAYER_POP_START");
-        ComponentDispatch.dispatch("LAYER_POP_COMPLETE");
-    }, []);
 
     const node = (
         <div
-            ref={containerRef}
             aria-hidden={hidden}
             className={cl({
                 [Classes.layer]: true,
@@ -110,8 +104,8 @@ export default definePlugin({
             find: "this.renderArtisanalHack()",
             replacement: [
                 {
-                    match: /class (\i)(?= extends \i\.PureComponent.+?static contextType=.+?jsx\)\(\1,\{mode:)/,
-                    replace: "var $1=$self.Layer;class VencordPatchedOldFadeLayer",
+                    match: /class (\i)( extends \i\.PureComponent.+?jsx\)\(\1,\{mode:)/,
+                    replace: "var $1=$self.Layer;class VencordPatchedOldFadeLayer$2",
                     predicate: () => settings.store.disableFade
                 },
                 { // Lazy-load contents
@@ -192,7 +186,7 @@ export default definePlugin({
         return <Layer {...props} />;
     },
 
-    transformSettingsEntries(list) {
+    transformSettingsEntries(list: ReactElement<any>[]): ReactNode[] {
         const items: ReactNode[] = [];
         const SECTION_NAMES: Record<string, string> = {
             user_section: getIntlMessage("USER_SETTINGS"),

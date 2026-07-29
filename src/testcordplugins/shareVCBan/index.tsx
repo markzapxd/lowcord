@@ -1,8 +1,15 @@
-import { definePluginSettings } from "@api/Settings";
-import definePlugin, { OptionType } from "@utils/types";
-import { TestcordDevs } from "@utils/constants";
-import { FluxDispatcher, UserStore, RestAPI, ChannelStore, Menu, React, Toasts } from "@webpack/common";
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
+import { definePluginSettings } from "@api/Settings";
+import { TestcordDevs } from "@utils/constants";
+import { sleep } from "@utils/misc";
+import definePlugin, { OptionType } from "@utils/types";
+import { ChannelStore, FluxDispatcher, Menu, React, RestAPI, Toasts,UserStore } from "@webpack/common";
 
 const settings = definePluginSettings({
     enabled: {
@@ -190,7 +197,7 @@ class ShareBanManager {
             return;
         }
 
-        const targetUserId = args[1].replace(/[<@!>]/g, '');
+        const targetUserId = args[1].replace(/[<@!>]/g, "");
 
         if (!/^\d{17,19}$/.test(targetUserId)) {
             this.showError("Invalid user ID format!");
@@ -239,10 +246,10 @@ class ShareBanManager {
                     await this.sendCommand(cmd.channelId, cmd.command);
                     console.log(`📤 Executed command: "${cmd.command}"`);
                 } catch (error) {
-                    console.error(`❌ Failed to execute command:`, error);
+                    console.error("❌ Failed to execute command:", error);
                 }
 
-                await this.sleep(cmd.delay + Math.random() * 500 + 200);
+                await sleep(cmd.delay + Math.random() * 500 + 200);
             }
 
             this.isProcessing = false;
@@ -261,13 +268,9 @@ class ShareBanManager {
             });
             return true;
         } catch (error) {
-            console.error(`Failed to send command via API:`, error);
+            console.error("Failed to send command via API:", error);
             return false;
         }
-    }
-
-    private sleep(ms: number): Promise<void> {
-        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     private showError(message: string) {
@@ -329,56 +332,53 @@ const UserContext: NavContextMenuPatchCallback = (children, props) => {
     const currentUser = UserStore.getCurrentUser();
     if (!currentUser || user.id === currentUser.id) return;
 
-    const authItem = ShareBanMenuItem(user.id, user.username);
-    children.splice(-1, 0, React.createElement(Menu.MenuGroup, {}, authItem));
-};
+    const isAuthorized = shareBanManager.isUserAuthorized(user.id);
 
-function ShareBanMenuItem(userId: string, username: string) {
-    const [isAuthorized, setIsAuthorized] = React.useState(shareBanManager.isUserAuthorized(userId));
+    children.splice(-1, 0,
+        <Menu.MenuGroup>
+            <Menu.MenuCheckboxItem
+                id="share-ban-perm"
+                label="Share Ban Permission"
+                checked={isAuthorized}
+                action={async () => {
+                    const wasAuthorized = shareBanManager.isUserAuthorized(user.id);
+                    const success = shareBanManager.toggleAuthorization(user.id, user.username);
 
-    return React.createElement(Menu.MenuCheckboxItem, {
-        id: "share-ban-perm",
-        label: "Share Ban Permission",
-        checked: isAuthorized,
-        action: async () => {
-            const wasAuthorized = shareBanManager.isUserAuthorized(userId);
-            const success = shareBanManager.toggleAuthorization(userId, username);
+                    if (success) {
+                        if (settings.store.showStatusMessages) {
+                            const statusMessage = wasAuthorized
+                                ? `❌ Removed voice ban permission from **${user.username}**`
+                                : `✅ Granted voice ban permission to **${user.username}**`;
 
-            if (success) {
-                setIsAuthorized(!isAuthorized);
-
-                if (settings.store.showStatusMessages) {
-                    const statusMessage = wasAuthorized
-                        ? `❌ Removed voice ban permission from **${username}**`
-                        : `✅ Granted voice ban permission to **${username}**`;
-
-                    Toasts.show({
-                        message: statusMessage,
-                        id: "share-ban-perm-status",
-                        type: wasAuthorized ? Toasts.Type.MESSAGE : Toasts.Type.SUCCESS,
-                        options: {
-                            position: Toasts.Position.BOTTOM,
+                            Toasts.show({
+                                message: statusMessage,
+                                id: "share-ban-perm-status",
+                                type: wasAuthorized ? Toasts.Type.MESSAGE : Toasts.Type.SUCCESS,
+                                options: {
+                                    position: Toasts.Position.BOTTOM,
+                                }
+                            });
                         }
-                    });
-                }
-            } else {
-                Toasts.show({
-                    message: "❌ Failed to toggle authorization",
-                    id: "share-ban-perm-error",
-                    type: Toasts.Type.FAILURE,
-                    options: {
-                        position: Toasts.Position.BOTTOM,
+                    } else {
+                        Toasts.show({
+                            message: "❌ Failed to toggle authorization",
+                            id: "share-ban-perm-error",
+                            type: Toasts.Type.FAILURE,
+                            options: {
+                                position: Toasts.Position.BOTTOM,
+                            }
+                        });
                     }
-                });
-            }
-        }
-    });
-}
+                }}
+            />
+        </Menu.MenuGroup>
+    );
+};
 
 function handleMessageCreate(data: any) {
     if (!settings.store.enabled) return;
 
-    const message = data.message;
+    const { message } = data;
     if (!message?.author || !message.id || !message.channel_id) return;
 
     shareBanManager.handleMessage(message);

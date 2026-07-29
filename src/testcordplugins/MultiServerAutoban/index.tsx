@@ -10,11 +10,11 @@ import { TestcordDevs } from "@utils/constants";
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByPropsLazy, findStoreLazy } from "@webpack";
-import { FluxDispatcher, GuildStore, Toasts, UserStore } from "@webpack/common";
-import { Button, ChannelStore, Forms, GuildChannelStore, Menu, React, RestAPI, TextInput } from "@webpack/common";
+import { Button, ChannelStore, FluxDispatcher, Forms, GuildChannelStore, GuildStore, Menu, React, RestAPI, TextInput, Toasts, UserStore } from "@webpack/common";
 
 const VoiceStateStore = findStoreLazy("VoiceStateStore");
 const sessionStore = findByPropsLazy("getSessionId");
+let pluginActive = false;
 
 const settings = definePluginSettings({
     users: {
@@ -612,7 +612,7 @@ function ServerConfigManager() {
                 ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                         {configs.map((config: any, index: number) => (
-                            <div key={index} style={{
+                            <div key={config.serverId ?? index} style={{
                                 backgroundColor: "var(--background-primary)",
                                 padding: "12px",
                                 borderRadius: "6px",
@@ -757,9 +757,11 @@ function MenuItem(id: string) {
                                     }
                                 });
 
-                                setTimeout(() => {
+                                const t = setTimeout(() => {
+                                    pendingBanTimeouts.delete(t);
                                     sendBanCommand(id, serverConfig.channelId, serverConfig.voiceCommand, " (added to list while in VC)");
                                 }, 200);
+                                pendingBanTimeouts.add(t);
                                 return;
                             }
                         }
@@ -895,9 +897,12 @@ function banUserInCurrentServer(userId: string) {
     }
 
     // Send ban command with delay
-    setTimeout(() => {
+    const timeout = setTimeout(() => {
+        pendingBanTimeouts.delete(timeout);
+        if (!pluginActive) return;
         sendBanCommand(userId, serverConfig.channelId, serverConfig.voiceCommand);
     }, 200);
+    pendingBanTimeouts.add(timeout);
 }
 
 // Function to check existing users in voice channel
@@ -929,9 +934,12 @@ function checkExistingUsersInVC(channelId: string) {
             });
 
             // Add delay between multiple bans to prevent rate limiting
-            setTimeout(() => {
+            const timeout = setTimeout(() => {
+                pendingBanTimeouts.delete(timeout);
+                if (!pluginActive) return;
                 sendBanCommand(userId, serverConfig.channelId, serverConfig.voiceCommand, " (existing user in VC)");
             }, 200 * (index + 1));
+            pendingBanTimeouts.add(timeout);
         }
     });
 }
@@ -955,6 +963,7 @@ export default definePlugin({
         "user-context": makeContextMenuPatch()
     },
     start() {
+        pluginActive = true;
         FluxDispatcher.subscribe("VOICE_STATE_UPDATES", voiceStateCallback);
         document.addEventListener("keydown", handleKeyDown);
 
@@ -968,10 +977,16 @@ export default definePlugin({
         });
     },
     stop() {
+        pluginActive = false;
         FluxDispatcher.unsubscribe("VOICE_STATE_UPDATES", voiceStateCallback);
         document.removeEventListener("keydown", handleKeyDown);
+        for (const id of pendingBanTimeouts) clearTimeout(id);
+        pendingBanTimeouts.clear();
     }
 });
+
+// Deferred ban/check timers — tracked so stop() can cancel any still pending after teardown
+const pendingBanTimeouts = new Set<ReturnType<typeof setTimeout>>();
 
 const voiceStateCallback = async (e: any) => {
     const state = e.voiceStates[0];
@@ -983,14 +998,17 @@ const voiceStateCallback = async (e: any) => {
     // Check if current user just joined a voice channel
     if (state.userId === currentUserId && state?.channelId !== state?.oldChannelId && state?.channelId) {
         // Small delay to ensure voice state is fully updated
-        setTimeout(() => {
+        const t = setTimeout(() => {
+            pendingBanTimeouts.delete(t);
+            if (!pluginActive) return;
             checkExistingUsersInVC(state.channelId);
         }, 500);
+        pendingBanTimeouts.add(t);
         return;
     }
 
     // Original logic for when someone else joins
-    if (state?.channelId == state?.oldChannelId) return;
+    if (state?.channelId === state?.oldChannelId) return;
     if (!Object.keys(voiceStates).includes(currentUserId)) return;
 
     const bannedUsers = settings.store.users.split("/").filter(item => item !== "");
@@ -1030,8 +1048,11 @@ const voiceStateCallback = async (e: any) => {
         });
 
         // Send ban command with working logic from original
-        setTimeout(() => {
+        const t = setTimeout(() => {
+            pendingBanTimeouts.delete(t);
+            if (!pluginActive) return;
             sendBanCommand(state.userId, serverConfig.channelId, serverConfig.voiceCommand, " (joined voice channel)");
         }, 100);
+        pendingBanTimeouts.add(t);
     }
 };

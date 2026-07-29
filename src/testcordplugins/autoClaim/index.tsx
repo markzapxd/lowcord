@@ -1,19 +1,36 @@
-import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
 import { classNameFactory } from "@api/Styles";
-import { Devs, EquicordDevs, TestcordDevs } from "@utils/constants";
-import definePlugin, { OptionType } from "@utils/types";
-import { findByCodeLazy, findStoreLazy, findByPropsLazy } from "@webpack";
-import { FluxDispatcher, Menu, MessageActions, MessageStore, ChannelStore, Button, Tooltip, RestAPI, useStateFromStores, SelectedGuildStore, RelationshipStore, SelectedChannelStore, Toasts, GuildStore, PermissionStore, React, UserStore } from "@webpack/common";
-import { Message, User } from "@vencord/discord-types";
+import { TestcordDevs } from "@utils/constants";
 import { classes } from "@utils/misc";
+import definePlugin, { OptionType } from "@utils/types";
+import { User } from "@vencord/discord-types";
+import { findByCodeLazy, findByPropsLazy,findStoreLazy } from "@webpack";
+import { Button, ChannelStore, Menu, React, RestAPI, Toasts, Tooltip, UserStore } from "@webpack/common";
 
 export const cl = classNameFactory("vc-voice-channel-log-");
 const createBotMessage = findByCodeLazy('username:"Clyde"');
 const VoiceStateStore = findStoreLazy("VoiceStateStore");
 const sessionStore = findByPropsLazy("getSessionId");
 
-let currentVcOwners: Map<string, string> = new Map();
+const currentVcOwners: Map<string, string> = new Map();
+let pluginActive = false;
+let pluginGeneration = 0;
+const pendingTimeouts = new Set<ReturnType<typeof setTimeout>>();
+
+function scheduleTimeout(callback: () => void, ms: number) {
+    const timeout = setTimeout(() => {
+        pendingTimeouts.delete(timeout);
+        if (pluginActive) callback();
+    }, ms);
+    pendingTimeouts.add(timeout);
+}
 
 const settings = definePluginSettings({
     allowedguilds: {
@@ -60,7 +77,7 @@ function isCustomVoiceChannel(channelId: string): boolean {
     const channelName = channel.name.trim();
 
     // Remove all infinity symbols, pipe symbols, and spaces from the start
-    const cleanedName = channelName.replace(/^[\u221E\|\s]+/, '');
+    const cleanedName = channelName.replace(/^[\u221E|\s]+/, "");
 
     // Check if what remains matches "VC [number]"
     const vcPattern = /^VC\s+\d+$/;
@@ -112,7 +129,7 @@ function updateVcOwnerTracking(channelId: string) {
 
     if (newOwner) {
         if (previousOwner !== newOwner) {
-            console.log(`VC ownership changed in channel ${channelId}: ${previousOwner || 'none'} -> ${newOwner}`);
+            console.log(`VC ownership changed in channel ${channelId}: ${previousOwner || "none"} -> ${newOwner}`);
             if (previousOwner) {
                 console.log(`Detected VC transfer from ${previousOwner} to ${newOwner}`);
             }
@@ -128,11 +145,12 @@ function updateVcOwnerTracking(channelId: string) {
 }
 
 function isGuildAllowed(guildId: string): boolean {
-    const allowedGuilds = settings.store.allowedguilds.split('/').filter(item => item !== '');
+    const allowedGuilds = settings.store.allowedguilds.split("/").filter(item => item !== "");
     return allowedGuilds.includes(guildId);
 }
 
 function attemptClaim(channelId: string, reason: string, isManual: boolean = false) {
+    const generation = pluginGeneration;
     if (!isManual && !settings.store.autoClaimEnabled) return;
 
     if (!isCustomVoiceChannel(channelId)) {
@@ -174,23 +192,25 @@ function attemptClaim(channelId: string, reason: string, isManual: boolean = fal
     RestAPI.post({
         url: `/channels/${channelId}/messages`,
         body: {
-            content: `!voice-claim`,
+            content: "!voice-claim",
             nonce: Math.floor(Math.random() * 10000000000000).toString()
         }
     }).then(() => {
-        console.log(`Successfully ${isManual ? 'manually' : 'auto-'}claimed channel ${channelId}`);
+        if (!pluginActive || generation !== pluginGeneration) return;
+        console.log(`Successfully ${isManual ? "manually" : "auto-"}claimed channel ${channelId}`);
 
         currentVcOwners.set(channelId, clientUserId);
 
         Toasts.show({
-            message: `Successfully ${isManual ? 'claimed' : 'auto-claimed'} voice channel!`,
+            message: `Successfully ${isManual ? "claimed" : "auto-claimed"} voice channel!`,
             id: isManual ? "manual-claim-success" : "auto-claim-success",
             type: Toasts.Type.SUCCESS,
             options: {
                 position: Toasts.Position.BOTTOM
             }
         });
-    }).catch((error) => {
+    }).catch(error => {
+        if (!pluginActive || generation !== pluginGeneration) return;
         console.error("Failed to claim channel:", error);
         Toasts.show({
             message: `Failed to claim channel: ${error.message}`,
@@ -227,7 +247,7 @@ function autoDetectVcOwnerOnJoin(channelId: string, guildId: string) {
         return;
     }
 
-    setTimeout(() => {
+    scheduleTimeout(() => {
         updateVcOwnerTracking(channelId);
         const owner = currentVcOwners.get(channelId);
         const clientUserId = UserStore.getCurrentUser().id;
@@ -321,6 +341,8 @@ export default definePlugin({
     settings,
 
     start() {
+        pluginActive = true;
+        pluginGeneration++;
         if (ownershipMonitorInterval) {
             clearInterval(ownershipMonitorInterval);
             ownershipMonitorInterval = null;
@@ -328,11 +350,15 @@ export default definePlugin({
     },
 
     stop() {
+        pluginActive = false;
+        pluginGeneration++;
         if (ownershipMonitorInterval) {
             clearInterval(ownershipMonitorInterval);
             ownershipMonitorInterval = null;
             console.log("Stopped VC ownership monitoring");
         }
+        for (const timeout of pendingTimeouts) clearTimeout(timeout);
+        pendingTimeouts.clear();
         currentVcOwners.clear();
     },
 
@@ -443,18 +469,18 @@ export default definePlugin({
                             currentVcOwners.delete(oldChannelId);
 
                             // Check if client is already the new owner before attempting claim
-                            setTimeout(() => {
+                            scheduleTimeout(() => {
                                 const newOwner = detectVcOwner(oldChannelId);
                                 if (newOwner === clientUserId) {
                                     console.log("Client is already the new owner, no claim needed");
                                     currentVcOwners.set(oldChannelId, clientUserId);
                                     return;
                                 }
-                                attemptClaim(oldChannelId, `Original VC owner left`);
+                                attemptClaim(oldChannelId, "Original VC owner left");
                             }, 1000);
 
                             // Fallback attempt
-                            setTimeout(() => {
+                            scheduleTimeout(() => {
                                 const newOwner = detectVcOwner(oldChannelId);
                                 if (newOwner === clientUserId) {
                                     console.log("Client became owner naturally, updating tracking");
@@ -464,7 +490,7 @@ export default definePlugin({
                                 // Only attempt if we still don't have an owner tracked
                                 if (!currentVcOwners.has(oldChannelId)) {
                                     console.log("Fallback attempt - no owner detected after delay");
-                                    attemptClaim(oldChannelId, `Fallback claim after owner left`);
+                                    attemptClaim(oldChannelId, "Fallback claim after owner left");
                                 }
                             }, 3000);
                         } else {
@@ -474,7 +500,7 @@ export default definePlugin({
                     // Check if any other owner left while client is in the channel
                     else if (clientCurrentChannel === oldChannelId && guildId && isGuildAllowed(guildId) && isCustomVoiceChannel(oldChannelId)) {
                         // Update tracking to see if ownership changed
-                        setTimeout(() => {
+                        scheduleTimeout(() => {
                             const previousOwner = currentVcOwners.get(oldChannelId);
                             updateVcOwnerTracking(oldChannelId);
                             const newOwner = currentVcOwners.get(oldChannelId);
@@ -482,12 +508,12 @@ export default definePlugin({
                             // If there's no owner now and someone just left, attempt to claim
                             if (!newOwner && settings.store.autoClaimOnTransfer && settings.store.autoClaimEnabled) {
                                 console.log(`No owner after user ${userId} left channel ${oldChannelId}, attempting auto-claim`);
-                                attemptClaim(oldChannelId, `Auto-claim after user left - no owner detected`);
+                                attemptClaim(oldChannelId, "Auto-claim after user left - no owner detected");
                             }
                             // If ownership transferred to someone else who just left
                             else if (newOwner && newOwner !== previousOwner && !isOwnerInChannel(oldChannelId, newOwner) && settings.store.autoClaimOnTransfer) {
                                 console.log(`New owner ${newOwner} not in channel ${oldChannelId}, attempting auto-claim`);
-                                attemptClaim(oldChannelId, `Auto-claim - transferred owner not present`);
+                                attemptClaim(oldChannelId, "Auto-claim - transferred owner not present");
                             }
                         }, 1500);
                     }
@@ -498,7 +524,7 @@ export default definePlugin({
                     const clientCurrentChannel = VoiceStateStore.getVoiceStateForUser(clientUserId)?.channelId;
 
                     if (clientCurrentChannel === channelId && guildId && isGuildAllowed(guildId) && isCustomVoiceChannel(channelId)) {
-                        setTimeout(() => {
+                        scheduleTimeout(() => {
                             updateVcOwnerTracking(channelId);
                             console.log(`Refreshed VC owner tracking for channel ${channelId} - new user joined`);
                         }, 1000);

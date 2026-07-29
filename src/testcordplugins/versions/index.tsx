@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Devs, TestcordDevs } from "@utils/constants";
+import { TestcordDevs } from "@utils/constants";
 import definePlugin from "@utils/types";
 
 import gitRemote from "~git-remote";
@@ -15,20 +15,7 @@ export default definePlugin({
     tags: ["Utility", "Developers"],
     authors: [TestcordDevs.x2b],
 
-    patches: [
-        {
-            find: ".versionHash",
-            replacement: [
-                {
-                    match: /\[\(0,.{1,3}\.jsxs?\)\((.{1,10}),(\{[^{}}]+\{.{0,20}.versionHash,.+?\})\)," "/,
-                    replace: (m, component, props) => {
-                        props = props.replace(/children:\[.+\]/, "");
-                        return `${m},Vencord.Plugins.plugins.Versions.makeInfoElements(${component}, ${props})`;
-                    }
-                }
-            ]
-        }
-    ],
+    patches: [],
 
     makeInfoElements(Component: React.ComponentType<React.PropsWithChildren>, props: React.PropsWithChildren) {
         const versions = VencordNative.native.getVersions();
@@ -40,8 +27,3 @@ export default definePlugin({
         );
     }
 });
-
-
-
-
-

@@ -4,17 +4,23 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import "./PluginIconColor.css";
+
+import { useSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
+import { getTestcordIconColor } from "@testcordplugins/TestcordHelper/iconColors";
 import { Logger } from "@utils/Logger";
 import { classes } from "@utils/misc";
 import { findComponentByCodeLazy, findCssClassesLazy } from "@webpack";
 import { Clickable, Tooltip, useEffect, useState } from "@webpack/common";
-import type { ComponentType, JSX, MouseEventHandler, ReactNode } from "react";
+import type { ComponentType, CSSProperties, JSX, MouseEventHandler, ReactNode } from "react";
 
 const logger = new Logger("HeaderBarAPI");
 
 const HeaderBarClasses = findCssClassesLazy("clickable", "selected", "badge", "badgeContainer");
 const HeaderBarIcon = findComponentByCodeLazy(".HEADER_BAR_BADGE_TOP:", '"aria-haspopup":') as ComponentType<ChannelToolbarButtonProps>;
+const TESTCORD_TOP_BAR_ICON_COLOR_SETTING: ["plugins.TestcordHelper.topBarButtonIconColor"] = ["plugins.TestcordHelper.topBarButtonIconColor"];
+const TESTCORD_HEADER_BAR_ICON_COLOR_SETTING: ["plugins.TestcordHelper.headerBarButtonIconColor"] = ["plugins.TestcordHelper.headerBarButtonIconColor"];
 
 export interface HeaderBarButtonProps {
     /** The icon component to render inside the button */
@@ -27,6 +33,8 @@ export interface HeaderBarButtonProps {
     onContextMenu?: MouseEventHandler<HTMLDivElement>;
     /** Additional CSS class names */
     className?: string;
+    /** Additional inline styles */
+    style?: CSSProperties;
     /** Size of the icon in pixels */
     iconSize?: number;
     /** Tooltip position relative to the button */
@@ -81,12 +89,15 @@ interface ButtonEntry {
  * />
  */
 export function HeaderBarButton(props: HeaderBarButtonProps & { ref?: React.RefObject<any>; }) {
+    useSettings(TESTCORD_TOP_BAR_ICON_COLOR_SETTING);
+    const iconColor = getTestcordIconColor("topBarButtonIconColor");
     const {
         icon: Icon,
         tooltip,
         onClick,
         onContextMenu,
         className,
+        style,
         iconSize = 18,
         position = "bottom",
         selected,
@@ -95,16 +106,30 @@ export function HeaderBarButton(props: HeaderBarButtonProps & { ref?: React.RefO
     } = props;
 
     const label = ariaLabel ?? (typeof tooltip === "string" ? tooltip : undefined);
+    const buttonStyle: CSSProperties & Record<"--vc-plugin-icon-color", string | undefined> = {
+        ...style,
+        "--vc-plugin-icon-color": iconColor,
+        width: Math.max(iconSize, 24),
+        height: Math.max(iconSize, 24),
+        boxSizing: "content-box",
+        justifyContent: "center"
+    };
 
     return (
-        <Tooltip text={tooltip ?? ""} position={position} shouldShow={tooltip != null}>
+        <Tooltip key={String(tooltip)} text={tooltip ?? ""} position={position} shouldShow={tooltip != null}>
             {({ onMouseEnter, onMouseLeave }) => (
                 <Clickable
                     {...{ innerRef: ref } as any}
-                    className={classes(HeaderBarClasses.clickable, className)}
-                    style={{ width: Math.max(iconSize, 24), height: Math.max(iconSize, 24), boxSizing: "content-box", justifyContent: "center" }}
-                    onClick={onClick}
-                    onContextMenu={onContextMenu}
+                    className={classes(HeaderBarClasses.clickable, "vc-plugin-icon-button", className)}
+                    style={buttonStyle}
+                    onClick={event => {
+                        onClick?.(event);
+                        headerBarListeners.forEach(listener => listener());
+                    }}
+                    onContextMenu={event => {
+                        onContextMenu?.(event);
+                        headerBarListeners.forEach(listener => listener());
+                    }}
                     onMouseEnter={onMouseEnter}
                     onMouseLeave={onMouseLeave}
                     role="button"
@@ -132,7 +157,30 @@ export function HeaderBarButton(props: HeaderBarButtonProps & { ref?: React.RefO
  * />
  */
 export function ChannelToolbarButton(props: ChannelToolbarButtonProps) {
-    return <HeaderBarIcon {...props} />;
+    useSettings(TESTCORD_HEADER_BAR_ICON_COLOR_SETTING);
+    const iconColor = getTestcordIconColor("headerBarButtonIconColor");
+    const wrapperStyle: CSSProperties & Record<"--vc-plugin-icon-color", string | undefined> = {
+        "--vc-plugin-icon-color": iconColor
+    };
+
+    return (
+        <span className="vc-plugin-icon-button" style={wrapperStyle}>
+            <HeaderBarIcon
+                key={String(props.tooltip)}
+                {...props}
+                className={classes("vc-plugin-icon-button", props.className)}
+                iconClassName={classes("vc-plugin-icon-button", props.iconClassName)}
+                onClick={event => {
+                    props.onClick?.(event);
+                    channelToolbarListeners.forEach(listener => listener());
+                }}
+                onContextMenu={event => {
+                    props.onContextMenu?.(event);
+                    channelToolbarListeners.forEach(listener => listener());
+                }}
+            />
+        </span>
+    );
 }
 
 const headerBarButtons = new Map<string, ButtonEntry>();
@@ -203,40 +251,55 @@ export function removeChannelToolbarButton(id: string) {
     channelToolbarListeners.forEach(listener => listener());
 }
 
+let cachedHeaderBarButtons: { id: string; render: HeaderBarButtonFactory; }[] | null = null;
+let cachedChannelToolbarButtons: { id: string; render: HeaderBarButtonFactory; }[] | null = null;
+
+function getSortedHeaderBarButtons() {
+    if (cachedHeaderBarButtons && cachedHeaderBarButtons.length === headerBarButtons.size) return cachedHeaderBarButtons;
+    cachedHeaderBarButtons = Array.from(headerBarButtons)
+        .sort(([, a], [, b]) => a.priority - b.priority)
+        .map(([id, { render }]) => ({ id, render }));
+    return cachedHeaderBarButtons;
+}
+
+function getSortedChannelToolbarButtons() {
+    if (cachedChannelToolbarButtons && cachedChannelToolbarButtons.length === channelToolbarButtons.size) return cachedChannelToolbarButtons;
+    cachedChannelToolbarButtons = Array.from(channelToolbarButtons)
+        .sort(([, a], [, b]) => a.priority - b.priority)
+        .map(([id, { render }]) => ({ id, render }));
+    return cachedChannelToolbarButtons;
+}
+
 function HeaderBarButtons() {
     const [, forceUpdate] = useState(0);
 
     useEffect(() => {
-        const listener = () => forceUpdate(n => n + 1);
+        const listener = () => { cachedHeaderBarButtons = null; forceUpdate(n => n + 1); };
         headerBarListeners.add(listener);
         return () => { headerBarListeners.delete(listener); };
     }, []);
 
-    return Array.from(headerBarButtons)
-        .sort(([, a], [, b]) => a.priority - b.priority)
-        .map(([id, { render: Button }]) => (
-            <ErrorBoundary noop key={id} onError={e => logger.error(`Failed to render header bar button: ${id}`, e.error)}>
-                <Button />
-            </ErrorBoundary>
-        ));
+    return getSortedHeaderBarButtons().map(({ id, render: Button }) => (
+        <ErrorBoundary noop key={id} onError={e => logger.error(`Failed to render header bar button: ${id}`, e.error)}>
+            <Button />
+        </ErrorBoundary>
+    ));
 }
 
 function ChannelToolbarButtons() {
     const [, forceUpdate] = useState(0);
 
     useEffect(() => {
-        const listener = () => forceUpdate(n => n + 1);
+        const listener = () => { cachedChannelToolbarButtons = null; forceUpdate(n => n + 1); };
         channelToolbarListeners.add(listener);
         return () => { channelToolbarListeners.delete(listener); };
     }, []);
 
-    return Array.from(channelToolbarButtons)
-        .sort(([, a], [, b]) => a.priority - b.priority)
-        .map(([id, { render: Button }]) => (
-            <ErrorBoundary noop key={id} onError={e => logger.error(`Failed to render channel toolbar button: ${id}`, e.error)}>
-                <Button />
-            </ErrorBoundary>
-        ));
+    return getSortedChannelToolbarButtons().map(({ id, render: Button }) => (
+        <ErrorBoundary noop key={id} onError={e => logger.error(`Failed to render channel toolbar button: ${id}`, e.error)}>
+            <Button />
+        </ErrorBoundary>
+    ));
 }
 
 /** @internal Injected by HeaderBarAPI patch (do NOT call directly) */
@@ -248,8 +311,6 @@ export function _addHeaderBarButtons() {
 export function _addChannelToolbarButtons(toolbar: ReactNode[]) {
     toolbar.push(<ChannelToolbarButtons key="vc-channel-toolbar-buttons" />);
 }
-
-
 
 // ══════════════════════════════════════════════════════════════════
 // STEALTH MODE (Nightcord compat) — exposed for plugins that hide UI

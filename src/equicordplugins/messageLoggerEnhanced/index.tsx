@@ -23,7 +23,7 @@ import * as LoggedMessageManager from "./LoggedMessageManager";
 import { addMessage } from "./LoggedMessageManager";
 import { settings } from "./settings";
 import { FetchMessagesResponse, LoadMessagePayload, LoggedMessage, LoggedMessageJSON, MessageCreatePayload, MessageDeleteBulkPayload, MessageDeletePayload, MessageUpdatePayload } from "./types";
-import { cleanUpCachedMessage, cleanupUserObject, clearMessageClassCache, getNative, isGhostPinged, mapTimestamp, messageJsonToMessageClass, reAddDeletedMessages } from "./utils";
+import { cleanUpCachedMessage, cleanupUserObject, clearMessageClassCache, getNative, invalidateMessageClassCache, isGhostPinged, mapTimestamp, messageJsonToMessageClass, reAddDeletedMessages } from "./utils";
 import { removeContextMenuBindings, setupContextMenuPatches } from "./utils/contextMenu";
 import { shouldIgnore } from "./utils/index";
 import { LimitedMap } from "./utils/LimitedMap";
@@ -38,14 +38,23 @@ export const cl = classNameFactory("vc-msg-logger-enhanced-");
 
 let didClearLogsOnStartup = false;
 const processedPayloads = new WeakSet<any>();
-const mergedMessageCache = new Map<string, LoggedMessageJSON>();
-const mergedEditTimestamps = new Map<string, number>();
+// These mirror entries of the capped cachedMessages map, but eviction there never reached
+// them, so they grew for every logged message the client rendered. Same cap, same setting.
+const mergedMessageCache = new LimitedMap<string, LoggedMessageJSON>();
+const mergedEditTimestamps = new LimitedMap<string, number>();
 
 const cacheThing = findByPropsLazy("commit", "getOrCreate");
 
 export async function clearLogs(showToast = true) {
     await idb.clearMessagesIDB(showToast);
     cacheSentMessages.clear();
+}
+
+export function invalidateMessageCaches(channelId: string, messageId: string) {
+    mergedMessageCache.delete(messageId);
+    mergedEditTimestamps.delete(messageId);
+    cacheSentMessages.delete(`${channelId},${messageId}`);
+    invalidateMessageClassCache(messageId);
 }
 
 let oldGetMessage: typeof MessageStore.getMessage;
@@ -182,19 +191,15 @@ async function messageUpdateHandler(payload: MessageUpdatePayload) {
 }
 
 function messageCreateHandler(payload: MessageCreatePayload) {
-    // we do this here because cache is limited and to save memory
     if (!settings.store.cacheMessagesFromServers && payload.guildId != null) {
         const ids = [payload.channelId, payload.message?.author?.id, payload.guildId];
-        const isWhitelisted =
-            settings.store.whitelistedIds
-                .split(",")
-                .some(e => ids.includes(e));
-        if (!isWhitelisted) {
-            return; // dont cache messages from servers when cacheMessagesFromServers is disabled and not whitelisted.
-        }
+        const whitelistedIds = settings.store.whitelistedIds;
+        const isWhitelisted = !whitelistedIds ? false : whitelistedIds.split(",").some(e => ids.includes(e));
+        if (!isWhitelisted) return;
     }
 
-    cacheSentMessages.set(`${payload.message.channel_id},${payload.message.id}`, cleanUpCachedMessage(payload.message));
+    const message = payload.message;
+    cacheSentMessages.set(`${message.channel_id},${message.id}`, cleanUpCachedMessage(message));
 }
 
 async function processMessageFetch(response: FetchMessagesResponse) {
@@ -422,6 +427,15 @@ export default definePlugin({
 
             const latestMessage = this.oldGetMessage(channelId, messageId);
 
+            // Temporary remove clears editHistory on the store message without touching IDB.
+            // Honor that for the session: drop stale caches and don't re-merge old history.
+            if (latestMessage && Array.isArray(latestMessage.editHistory) && latestMessage.editHistory.length === 0 && (MLMessage.editHistory?.length ?? 0) > 0) {
+                invalidateMessageClassCache(messageId);
+                mergedMessageCache.delete(messageId);
+                mergedEditTimestamps.delete(messageId);
+                return latestMessage;
+            }
+
             // Reuse cached merged object when message hasn't been edited
             const cached = mergedMessageCache.get(messageId);
             if (cached) {
@@ -434,6 +448,7 @@ export default definePlugin({
             const merged = { ...MLMessage, ...(latestMessage ?? {}) };
             mergedMessageCache.set(messageId, merged);
             mergedEditTimestamps.set(messageId, latestMessage?.editedTimestamp?.valueOf?.() ?? 0);
+            invalidateMessageClassCache(messageId);
             return messageJsonToMessageClass({ message: merged });
         };
 

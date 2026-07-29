@@ -37,6 +37,11 @@ const ContextMenuLogger = new Logger("ContextMenu");
 export const navPatches = new Map<string, Set<NavContextMenuPatchCallback>>();
 export const globalPatches = new Set<GlobalContextMenuPatchCallback>();
 
+/** Log individual patches slower than this (ms). Only when IS_DEV. */
+const SLOW_PATCH_MS = 2;
+/** Log total patch pass slower than this (ms). Only when IS_DEV. */
+const SLOW_TOTAL_MS = 8;
+
 /**
  * Add a context menu patch
  * @param navId The navId(s) for the context menu(s) to patch
@@ -86,6 +91,9 @@ export function removeGlobalContextMenuPatch(patch: GlobalContextMenuPatchCallba
     return globalPatches.delete(patch);
 }
 
+let findCacheChildren: Array<ReactElement<any> | null> | null = null;
+let findCache: Map<string, Array<ReactElement<any> | null | undefined> | null> | null = null;
+
 /**
  * A helper function for finding the children array of a group nested inside a context menu based on the id(s) of its children
  * @param id The id of the child. If an array is specified, all ids will be tried
@@ -93,11 +101,24 @@ export function removeGlobalContextMenuPatch(patch: GlobalContextMenuPatchCallba
  * @param matchSubstring Whether to check if the id is a substring of the child id
  */
 export function findGroupChildrenByChildId(id: string | string[], children: Array<ReactElement<any> | null | undefined>, matchSubstring = false): Array<ReactElement<any> | null | undefined> | null {
+    if (findCache && children === findCacheChildren) {
+        const key = `${matchSubstring ? "substring" : "exact"}\0${Array.isArray(id) ? id.join("\0") : id}`;
+        if (findCache.has(key)) {
+            return findCache.get(key) ?? null;
+        }
+        const result = findGroupChildrenByChildIdImpl(id, children, matchSubstring);
+        findCache.set(key, result);
+        return result;
+    }
+    return findGroupChildrenByChildIdImpl(id, children, matchSubstring);
+}
+
+function findGroupChildrenByChildIdImpl(id: string | string[], children: Array<ReactElement<any> | null | undefined>, matchSubstring = false): Array<ReactElement<any> | null | undefined> | null {
     for (const child of children) {
         if (child == null) continue;
 
         if (Array.isArray(child)) {
-            const found = findGroupChildrenByChildId(id, child, matchSubstring);
+            const found = findGroupChildrenByChildIdImpl(id, child, matchSubstring);
             if (found !== null) return found;
         }
 
@@ -113,7 +134,7 @@ export function findGroupChildrenByChildId(id: string | string[], children: Arra
                 child.props.children = nextChildren;
             }
 
-            const found = findGroupChildrenByChildId(id, nextChildren, matchSubstring);
+            const found = findGroupChildrenByChildIdImpl(id, nextChildren, matchSubstring);
             if (found !== null) return found;
         }
     }
@@ -130,38 +151,160 @@ interface ContextMenuProps {
     onClose: (callback: (...args: Array<any>) => any) => void;
 }
 
-export function _usePatchContextMenu(props: ContextMenuProps) {
-    if (!Menu.MenuItem) return props; // Prevent crashes in case we fail to acquire menu items for some reason
+interface MountPatchState {
+    /** The `children` prop `patchedChildren` was built from. */
+    sourceChildren: ContextMenuProps["children"] | null;
+    patchedChildren: Array<ReactElement<any> | null> | null;
+    /** True once a patch pass has completed, i.e. the menu is already on screen. */
+    patchedOnce: boolean;
+}
 
-    props = {
-        ...props,
-        children: cloneMenuChildren(props.children),
-    };
+function normalizeChildren(children: ContextMenuProps["children"]): Array<ReactElement<any> | null> {
+    return Array.isArray(children) ? children : [children];
+}
 
-    props.contextMenuAPIArguments ??= [];
-    const contextMenuPatches = navPatches.get(props.navId);
+function applyAllPatches(
+    navId: string,
+    sourceChildren: ContextMenuProps["children"],
+    args: Array<any>
+): Array<ReactElement<any> | null> {
+    const contextMenuPatches = navPatches.get(navId);
+    const hasPatches = (contextMenuPatches?.size ?? 0) > 0 || globalPatches.size > 0;
 
-    if (!Array.isArray(props.children)) props.children = [props.children];
+    let children = hasPatches
+        ? cloneMenuChildren(sourceChildren)
+        : sourceChildren;
 
-    if (contextMenuPatches) {
-        for (const patch of contextMenuPatches) {
-            try {
-                patch(props.children, ...props.contextMenuAPIArguments);
-            } catch (err) {
-                ContextMenuLogger.error(`Patch for ${props.navId} errored,`, err);
+    if (!Array.isArray(children)) children = [children];
+
+    if (!hasPatches) return children;
+
+    const timed = typeof IS_DEV !== "undefined" && IS_DEV;
+    const totalStart = timed ? performance.now() : 0;
+    const slowPatches: string[] = [];
+
+    findCacheChildren = children;
+    findCache = new Map();
+    try {
+        if (contextMenuPatches?.size) {
+            let i = 0;
+            for (const patch of contextMenuPatches) {
+                const t0 = timed ? performance.now() : 0;
+                try {
+                    patch(children, ...args);
+                } catch (err) {
+                    ContextMenuLogger.error(`Patch for ${navId} errored,`, err);
+                }
+                if (timed) {
+                    const dt = performance.now() - t0;
+                    if (dt >= SLOW_PATCH_MS) slowPatches.push(`nav#${i}=${dt.toFixed(1)}ms`);
+                }
+                i++;
             }
         }
+
+        if (globalPatches.size) {
+            let i = 0;
+            for (const patch of globalPatches) {
+                const t0 = timed ? performance.now() : 0;
+                try {
+                    patch(navId, children, ...args);
+                } catch (err) {
+                    ContextMenuLogger.error("Global patch errored,", err);
+                }
+                if (timed) {
+                    const dt = performance.now() - t0;
+                    if (dt >= SLOW_PATCH_MS) slowPatches.push(`global#${i}=${dt.toFixed(1)}ms`);
+                }
+                i++;
+            }
+        }
+    } finally {
+        findCache = null;
+        findCacheChildren = null;
     }
 
-    for (const patch of globalPatches) {
-        try {
-            patch(props.navId, props.children, ...props.contextMenuAPIArguments);
-        } catch (err) {
-            ContextMenuLogger.error("Global patch errored,", err);
+    if (timed) {
+        const total = performance.now() - totalStart;
+        if (total >= SLOW_TOTAL_MS || slowPatches.length) {
+            ContextMenuLogger.debug(
+                `Patched ${navId} in ${total.toFixed(1)}ms` +
+                (slowPatches.length ? ` [${slowPatches.join(", ")}]` : "") +
+                ` (nav=${contextMenuPatches?.size ?? 0}, global=${globalPatches.size})`
+            );
         }
     }
 
-    return props;
+    return children;
+}
+
+/**
+ * Patches context menu children for plugin items.
+ *
+ * The first paint of a menu shows Discord's stock items and applies plugin patches in an
+ * effect right after, so right-click feels instant even with dozens of menu plugins. Every
+ * render after that patches inline, because a re-render means the menu's own state changed
+ * (a checkbox toggled, a search box typed into) and that update has to land in this render.
+ */
+export function _usePatchContextMenu(props: ContextMenuProps) {
+    // Hooks must run unconditionally (before any early return).
+    const mountRef = React.useRef<MountPatchState>({
+        sourceChildren: null,
+        patchedChildren: null,
+        patchedOnce: false
+    });
+    const [, forceRender] = React.useReducer((n: number) => n + 1, 0);
+
+    props.contextMenuAPIArguments ??= [];
+    const args = props.contextMenuAPIArguments;
+
+    const contextMenuPatches = navPatches.get(props.navId);
+    const hasPatches = (contextMenuPatches?.size ?? 0) > 0 || globalPatches.size > 0;
+
+    React.useEffect(() => {
+        if (!Menu.MenuItem) return;
+        if (!hasPatches) return;
+
+        const state = mountRef.current;
+        // Already handled, either by a previous effect or inline in the render below.
+        if (state.sourceChildren === props.children) return;
+
+        try {
+            state.patchedChildren = applyAllPatches(props.navId, props.children, args);
+            state.sourceChildren = props.children;
+            state.patchedOnce = true;
+            forceRender();
+        } catch (err) {
+            ContextMenuLogger.error(`Deferred patch for ${props.navId} failed,`, err);
+        }
+    }, [props.navId, props.children, hasPatches]);
+
+    if (!Menu.MenuItem) return props; // Prevent crashes if menu items failed to resolve
+
+    const state = mountRef.current;
+
+    if (state.patchedChildren && state.sourceChildren === props.children) {
+        return { ...props, children: state.patchedChildren };
+    }
+
+    if (!hasPatches) {
+        const children = normalizeChildren(props.children);
+        state.sourceChildren = props.children;
+        state.patchedChildren = children;
+        return { ...props, children };
+    }
+
+    // Menu is already on screen, so patch inline instead of waiting a frame and flashing
+    // back to Discord's stock items.
+    if (state.patchedOnce) {
+        const children = applyAllPatches(props.navId, props.children, args);
+        state.sourceChildren = props.children;
+        state.patchedChildren = children;
+        return { ...props, children };
+    }
+
+    // First paint: stock Discord menu only. Plugin rows appear on the next frame.
+    return { ...props, children: normalizeChildren(props.children) };
 }
 
 function cloneMenuChildren(obj: ReactElement<any> | Array<ReactElement<any> | null> | null) {
