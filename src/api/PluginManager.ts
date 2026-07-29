@@ -270,8 +270,6 @@ export const startPlugin = traceFunction("startPlugin", function startPlugin(p: 
         }
     }
 
-    p.started = true;
-
     if (commands?.length) {
         logger.debug("Registering commands of plugin", name);
         for (const cmd of commands) {
@@ -283,6 +281,8 @@ export const startPlugin = traceFunction("startPlugin", function startPlugin(p: 
             }
         }
     }
+
+    p.started = true;
 
     if (enabledPluginsSubscribedFlux) {
         subscribePluginFluxEvents(p, FluxDispatcher);
