@@ -1,4 +1,11 @@
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { definePluginSettings } from "@api/Settings";
+import { showNotification } from "@api/Notifications";
 import { TestcordDevs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
@@ -108,7 +115,7 @@ export default definePlugin({
             predicate: () => settings.store.masterToggle,
             replacement: {
                 match: /channels:1,/,
-                replace: 'channels:1,prams:{stereo:"1"},',
+                replace: 'channels:1,params:{stereo:"1"},',
                 predicate: () => settings.store.staticMode === 1
             }
         },
@@ -117,7 +124,7 @@ export default definePlugin({
             predicate: () => settings.store.masterToggle,
             replacement: {
                 match: /channels:1,/,
-                replace: 'channels:2,prams:{stereo:"2"},',
+                replace: 'channels:2,params:{stereo:"2"},',
                 predicate: () => settings.store.staticMode === 2
             }
         },
@@ -126,7 +133,7 @@ export default definePlugin({
             predicate: () => settings.store.masterToggle,
             replacement: {
                 match: /channels:1,/,
-                replace: 'channels:7.1,prams:{stereo:"7.1"},',
+                replace: 'channels:7.1,params:{stereo:"7.1"},',
                 predicate: () => settings.store.staticMode === 7.1
             }
         },
