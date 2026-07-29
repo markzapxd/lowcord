@@ -1198,7 +1198,7 @@ let liveFixInterval: ReturnType<typeof setInterval> | null = null;
 
 interface LiveFixRequest {
     id: string;
-    action: "search" | "readModule" | "eval" | "testPattern" | "listPending" | "patchHealth"
+    action: "search" | "readModule" | "testPattern" | "listPending" | "patchHealth"
     | "dispatchStats" | "slowEvents" | "pluginTimings" | "patchTimings" | "memory" | "profile" | "reset"
     | "consoleDump";
     query?: string;
@@ -1274,12 +1274,6 @@ function handleLiveFixRequest(req: LiveFixRequest): any {
                 const factory = wreq?.m?.[req.moduleId];
                 if (!factory) return { id, error: `Module ${req.moduleId} not found` };
                 return { id, source: String(factory) };
-            }
-
-            case "eval": {
-                if (!req.code) return { id, error: "Missing code" };
-                const result = eval(req.code);
-                return { id, result: typeof result === "object" ? JSON.stringify(result, null, 2) : String(result) };
             }
 
             case "testPattern": {
