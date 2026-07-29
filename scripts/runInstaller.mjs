@@ -25,7 +25,7 @@ import { Readable } from "stream";
 import { finished } from "stream/promises";
 import { fileURLToPath } from "url";
 
-const BASE_URL = "https://github.com/markzapxd/Equilotl/releases/latest/download/";
+const BASE_URL = "https://github.com/markzapxd/Lowlotl/releases/latest/download/";
 const INSTALLER_PATH_DARWIN = "Equilotl.app/Contents/MacOS/Equilotl";
 const INSTALLER_APP_DARWIN = "Equilotl.app";
 
@@ -36,18 +36,18 @@ const ETAG_FILE = join(FILE_DIR, "etag.txt");
 function getFilename() {
     switch (process.platform) {
         case "win32":
-            return "LowCordInstallerCli.exe";
+            return "LowlotlCli.exe";
         case "darwin":
             switch (process.arch) {
                 case "x64":
-                    return "LowCordInstaller-darwin-x64.zip";
+                    return "Lowlotl-darwin-x64.zip";
                 case "arm64":
-                    return "LowCordInstaller-darwin-arm64.zip";
+                    return "Lowlotl-darwin-arm64.zip";
                 default:
                     throw new Error("Unsupported macOS architecture: " + process.arch);
             }
         case "linux":
-            return "LowCordInstallerCli-linux";
+            return "LowlotlCli-linux";
         default:
             throw new Error("Unsupported platform: " + process.platform);
     }
