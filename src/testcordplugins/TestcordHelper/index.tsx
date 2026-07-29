@@ -44,7 +44,6 @@ function crashRejectionHandler(e: PromiseRejectionEvent) {
     e.preventDefault();
     logger.warn("Suppressed unhandled promise rejection:", e.reason);
 }
-}
 
 function installCrashGuards() {
     if (crashGuardsActive) return;
