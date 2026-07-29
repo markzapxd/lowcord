@@ -118,7 +118,10 @@ const storeAssignments: Record<string, (s: any) => void> = {
     WindowStore: m => WindowStore = m,
     EmojiStore: m => EmojiStore = m,
     StickersStore: m => StickersStore = m,
-    ThemeStore: m => ThemeStore = m,
+    ThemeStore: m => {
+        ThemeStore = m;
+        Vencord.Api.Themes.initQuickCssThemeStore(m);
+    },
     TypingStore: m => TypingStore = m,
     VoiceStateStore: m => VoiceStateStore = m,
     StreamerModeStore: m => StreamerModeStore = m,
@@ -156,9 +159,6 @@ waitFor(m => {
     if (name && unassignedStores.has(name)) {
         storeAssignments[name](m);
         unassignedStores.delete(name);
-        if (name === "ThemeStore") {
-            (Vencord as any).QuickCss?.initQuickCssThemeStore();
-        }
     }
     return unassignedStores.size === 0;
 }, () => {});
