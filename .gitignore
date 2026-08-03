@@ -6,6 +6,7 @@ node_modules
 .input
 .pnpm-store
 
+release.sh
 *.exe
 vencord_installer
 equicord_installer
