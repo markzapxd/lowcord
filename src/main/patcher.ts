@@ -87,7 +87,7 @@ if (!IS_VANILLA) {
                 return;
             }
 
-            const { frameless, mainWindowFrameless, winNativeTitleBar, disableMinSize, transparent, macosVibrancyStyle, windowsMaterial } = settings;
+            const { frameless, mainWindowFrameless, nativeTitleBar, disableMinSize, transparent, macosVibrancyStyle, windowsMaterial } = settings;
 
             const original = options.webPreferences.preload;
             const isMainWindow = options.title === "Discord";
@@ -100,7 +100,7 @@ if (!IS_VANILLA) {
                 options.frame = false;
             } else if (frameless) {
                 options.frame = false;
-            } else if (process.platform === "win32" && winNativeTitleBar) {
+            } else if (process.platform === "win32" && nativeTitleBar) {
                 delete options.frame;
             }
 
@@ -122,9 +122,36 @@ if (!IS_VANILLA) {
                 options.backgroundColor = "#00000000";
             }
 
+            options.webPreferences.devTools = true;
+
             process.env.DISCORD_PRELOAD = original;
 
             super(options);
+
+            this.webContents.on("before-input-event", (event, input) => {
+                if (input.type === "keyDown") {
+                    const isCtrl = input.control || input.meta;
+                    const key = input.key.toLowerCase();
+                    if ((isCtrl && input.shift && key === "i") || (isCtrl && input.alt && key === "i") || key === "f12") {
+                        if (this.webContents.isDevToolsOpened()) {
+                            this.webContents.closeDevTools();
+                        } else {
+                            this.webContents.openDevTools({ mode: "right" });
+                        }
+                        event.preventDefault();
+                    }
+                }
+            });
+
+            this.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+                if (isMainFrame) {
+                    console.error(`[Testcord] Main frame failed to load (${errorCode}): ${errorDescription} - ${validatedURL}`);
+                }
+            });
+
+            this.webContents.on("preload-error", (_event, preloadPath, error) => {
+                console.error(`[Testcord] Preload failed to load (${preloadPath}):`, error);
+            });
 
             if (disableMinSize) {
                 // Disable the Electron call entirely so that Discord can't dynamically change the size
@@ -148,33 +175,19 @@ if (!IS_VANILLA) {
 
     // Patch appSettings to force enable devtools
     onceDefined(global, "appSettings", s => {
+        s.set("DANGEROUS_ENABLE_DEVTOOLS_ONLY_ENABLE_IF_YOU_KNOW_WHAT_YOU_ARE_DOING", true);
         s.set("DANGEROUS_ENABLE_DEVTOOLS_ONLY_ENABLE_IF_YOU_KNOW_WHAT_YOURE_DOING", true);
     });
 
-    process.env.DATA_DIR = join(app.getPath("userData"), "..", "Equicord");
-
-    // Monkey patch commandLine to:
-    // - disable UseEcoQoSForBackgroundProcess: Work around Discord unloading when in background
-    const originalAppend = app.commandLine.appendSwitch;
-    app.commandLine.appendSwitch = function (...args) {
-        if (args[0] === "disable-features") {
-            const disabledFeatures = new Set((args[1] ?? "").split(","));
-            disabledFeatures.add("UseEcoQoSForBackgroundProcess");
-            args[1] = [...disabledFeatures].filter(Boolean).join(",");
-        }
-        return originalAppend.apply(this, args);
-    };
-
-    // disable renderer backgrounding to prevent the app from unloading when in the background
-    // https://github.com/electron/electron/issues/2822
-    // https://github.com/GoogleChrome/chrome-launcher/blob/5a27dd574d47a75fec0fb50f7b774ebf8a9791ba/docs/chrome-flags-for-tools.md#task-throttling
-    // Work around discord unloading when in background
-    // Discord also recently started adding these flags but only on windows for some reason dunno why, it happens on Linux too
-    app.commandLine.appendSwitch("disable-renderer-backgrounding");
-    app.commandLine.appendSwitch("disable-background-timer-throttling");
-    app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+    process.env.DATA_DIR = join(app.getPath("userData"), "..", "Testcord");
+    // The setting is `default: false` and its description is "print a native stack trace
+    // when Discord crashes", i.e. the toggle turns traces *on*. `=== true` is therefore
+    // "off unless explicitly enabled". The previous `!== false` also turned them on for any
+    // unset or legacy value, which is every install that never touched the toggle, since
+    // the renderer only materialises the default via getDefaultValue.
+    if (settings.plugins?.NoTrack?.disableStackDumping === true) process.env.ELECTRON_ENABLE_STACK_DUMPING = "true";
 } else {
-    console.log("[Testcord] Running in vanilla mode. Not loading Equicord");
+    console.log("[Testcord] Running in vanilla mode. Not loading Testcord");
 }
 
 console.log("[Testcord] Loading original Discord app.asar");

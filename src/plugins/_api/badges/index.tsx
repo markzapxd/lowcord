@@ -19,16 +19,19 @@
 import "./fixDiscordBadgePadding.css";
 
 import { _getBadges, BadgePosition, BadgeUserArgs, ProfileBadge } from "@api/Badges";
+import { Settings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
+import { CopyIcon, LinkIcon } from "@components/Icons";
 import { openContributorModal } from "@components/settings/tabs";
 import { Devs } from "@utils/constants";
 import { copyWithToast, fetchUserProfile } from "@utils/discord";
 import { Logger } from "@utils/Logger";
 import { shouldShowContributorBadge, shouldShowEquicordContributorBadge, shouldShowTestcordAdminBadge, shouldShowTestcordContributorBadge } from "@utils/misc";
-import { isTestcordDeveloper, isTestcordOwner } from "@utils/testcordAdmins";
+import { isTestcordArtist, isTestcordDeveloper, isTestcordOwner } from "@utils/testcordAdmins";
 import { ZWSP } from "@utils/text";
 import definePlugin from "@utils/types";
-import { Constants, ContextMenuApi, Menu, RestAPI, Toasts, UserProfileStore, UserStore } from "@webpack/common";
+import { Constants, ContextMenuApi, Menu, RestAPI, showToast, UserProfileStore, UserStore } from "@webpack/common";
+import testcordArtistIconBase64 from "file://../../../../browser/TestcordArtist.png?base64";
 
 import Plugins, { PluginMeta } from "~plugins";
 
@@ -41,6 +44,9 @@ const USERPLUGIN_CONTRIBUTOR_BADGE = "https://Equicord.org/assets/icons/misc/use
 const TESTCORD_ADMIN_BADGE = "https://raw.githubusercontent.com/TestcordDev/tbadges/main/admnew.png";
 const TESTCORD_OWNER_BADGE = "https://raw.githubusercontent.com/TestcordDev/tbadges/refs/heads/main/ownnew.png";
 const TESTCORD_DEV_BADGE = "https://raw.githubusercontent.com/TestcordDev/tbadges/refs/heads/main/devnew.png";
+const TESTCORD_ARTIST_BADGE_URL = "https://raw.githubusercontent.com/TestcordDev/TestCord/main/browser/TestcordArtist.png";
+
+const TESTCORD_ARTIST_BADGE = `data:image/png;base64,${testcordArtistIconBase64}`;
 
 // URL for custom testcord badges (managed by /badge command)
 const TBADGES_JSON_URL = "https://raw.githubusercontent.com/TestcordDev/tbadges/main/badges.json";
@@ -166,6 +172,20 @@ const TestcordDevBadge: ProfileBadge = {
     },
 };
 
+const TestcordArtistBadge: ProfileBadge = {
+    id: "testcord_artist",
+    description: "Testcord Artist",
+    iconSrc: TESTCORD_ARTIST_BADGE,
+    position: BadgePosition.START,
+    shouldShow: ({ userId }) => isTestcordArtist(userId),
+    props: {
+        style: {
+            borderRadius: "50%",
+            transform: "scale(0.9)"
+        }
+    },
+};
+
 let DonorBadges = {} as Record<string, Array<Record<"tooltip" | "badge", string>>>;
 let EquicordDonorBadges = {} as Record<string, Array<Record<"tooltip" | "badge", string>>>;
 let TestcordCustomBadges = {} as Record<string, Array<Record<"tooltip" | "badge", string>>>;
@@ -215,6 +235,8 @@ let intervalId: any;
 const badgeLogger = new Logger("BadgeAPI");
 
 async function ensurePronounsMarker() {
+    if ((Settings as any).plugins?.TestcordHelper?.pronounsBadge === false) return;
+
     const selfId = UserStore.getCurrentUser()?.id;
     if (!selfId) return;
 
@@ -249,13 +271,15 @@ export function BadgeContextMenu({ badge }: { badge: Omit<ProfileBadge, "id"> & 
                     id="vc-badge-copy-name"
                     label="Copy Badge Name"
                     action={() => copyWithToast(badge.description!)}
+                    leadingAccessory={{ type: "icon", icon: CopyIcon }}
                 />
             )}
             {badge.iconSrc && (
                 <Menu.MenuItem
                     id="vc-badge-copy-link"
                     label="Copy Badge Image Link"
-                    action={() => copyWithToast(badge.iconSrc!)}
+                    action={() => copyWithToast(badge.link ?? badge.iconSrc!)}
+                    leadingAccessory={{ type: "icon", icon: LinkIcon }}
                 />
             )}
         </Menu.Menu>
@@ -317,19 +341,17 @@ export default definePlugin({
     toolboxActions: {
         async "Refetch Badges"() {
             await loadAllBadges(true);
-            Toasts.show({
-                id: Toasts.genId(),
-                message: "Successfully refetched badges!",
-                type: Toasts.Type.SUCCESS
-            });
+            showToast("Successfully refetched badges!", "success");
         }
     },
 
-    userProfileBadges: [ContributorBadge, EquicordContributorBadge, TestcordContributorBadge, TestcordUserBadge, TestcordAdminBadge, TestcordOwnerBadge, TestcordDevBadge, UserPluginContributorBadge],
+    userProfileBadges: [ContributorBadge, EquicordContributorBadge, TestcordContributorBadge, TestcordUserBadge, TestcordAdminBadge, TestcordOwnerBadge, TestcordDevBadge, TestcordArtistBadge, UserPluginContributorBadge],
 
-    async start() {
-        ensurePronounsMarker();
-        await loadAllBadges();
+    start() {
+        setTimeout(() => {
+            ensurePronounsMarker();
+            loadAllBadges();
+        }, 100);
         clearInterval(intervalId);
         intervalId = setInterval(loadAllBadges, 1000 * 60 * 30); // 30 minutes
     },

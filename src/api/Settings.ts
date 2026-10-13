@@ -19,6 +19,7 @@
 import { SettingsStore as SettingsStoreClass } from "@shared/SettingsStore";
 import { Logger } from "@utils/Logger";
 import { mergeDefaults } from "@utils/mergeDefaults";
+import { findPlugin } from "@utils/pluginIds";
 import { DefinedSettings, OptionType, SettingsChecks, SettingsDefinition } from "@utils/types";
 import { React, useEffect } from "@webpack/common";
 
@@ -73,7 +74,7 @@ export interface Settings {
     | undefined;
     windowsMaterial: "none" | "mica" | "tabbed" | "acrylic";
     disableMinSize: boolean;
-    winNativeTitleBar: boolean;
+    nativeTitleBar: boolean;
     plugins: {
         [plugin: string]: {
             enabled: boolean;
@@ -105,6 +106,8 @@ export interface Settings {
     ignoreResetWarning: boolean;
     hideThemeMarketplace?: boolean;
     hideSnippetMarketplace?: boolean;
+    useTestcordIcon: boolean;
+    experimentalDataStoreExport: boolean;
 }
 
 const DefaultSettings: Settings = {
@@ -112,6 +115,7 @@ const DefaultSettings: Settings = {
     autoUpdateNotification: true,
     updaterBranch: "main",
     useQuickCss: true,
+    useTestcordIcon: false,
     hideThemeMarketplace: false,
     hideSnippetMarketplace: false,
     themeLinks: [],
@@ -130,7 +134,7 @@ const DefaultSettings: Settings = {
     macosVibrancyStyle: undefined,
     windowsMaterial: "none",
     disableMinSize: false,
-    winNativeTitleBar: false,
+    nativeTitleBar: false,
     plugins: {},
 
     uiElements: {
@@ -154,6 +158,7 @@ const DefaultSettings: Settings = {
     },
 
     ignoreResetWarning: false,
+    experimentalDataStoreExport: false,
 };
 
 const settings = !IS_REPORTER ? VencordNative.settings.get() : {} as Settings;
@@ -169,17 +174,46 @@ export const SettingsStore = new SettingsStoreClass(settings, {
         const v = target[key];
         if (!plugins) return v; // plugins not initialised yet. this means this path was reached by being called on the top level
 
-        if (path === "plugins" && key in plugins)
-            return target[key] = {
-                enabled: IS_REPORTER || plugins[key].required || plugins[key].enabledByDefault || false
-            };
+        if (path === "plugins") {
+            const pl = findPlugin(key, plugins as any);
+            if (pl) {
+                const cid = (pl as any).id ?? (pl as any).name;
+                const legacyName = (pl as any).name;
+
+                if (target[cid]) {
+                    return target[cid];
+                }
+                if (legacyName && target[legacyName]) {
+                    const legacyVal = target[legacyName];
+                    if (cid !== legacyName) {
+                        delete target[legacyName];
+                        target[cid] = legacyVal;
+                    }
+                    return target[cid];
+                }
+                if (Array.isArray((pl as any).aliases)) {
+                    for (const a of (pl as any).aliases) {
+                        if (target[a]) {
+                            const aVal = target[a];
+                            delete target[a];
+                            target[cid] = aVal;
+                            return target[cid];
+                        }
+                    }
+                }
+                return target[cid] = {
+                    enabled: IS_REPORTER || (pl as any).required || (pl as any).enabledByDefault || false
+                };
+            }
+        }
 
         // Since the property is not set, check if this is a plugin's setting and if so, try to resolve
         // the default value.
         if (path.startsWith("plugins.")) {
-            const plugin = path.slice("plugins.".length);
-            if (plugin in plugins) {
-                const setting = plugins[plugin].settings?.def[key];
+            const pluginId = path.slice("plugins.".length);
+            const pl = findPlugin(pluginId, plugins as any);
+            if (pl) {
+                const setting = (pl as any).settings?.def[key];
                 if (!setting) return v;
 
                 if ("default" in setting)
@@ -187,7 +221,7 @@ export const SettingsStore = new SettingsStoreClass(settings, {
                     return (target[key] = setting.default);
 
                 if (setting.type === OptionType.SELECT) {
-                    const def = setting.options.find(o => o.default);
+                    const def = setting.options?.find(o => o.default);
                     if (def)
                         target[key] = def.value;
                     return def?.value;
@@ -393,7 +427,8 @@ export function definePluginSettings<
         },
         get plain() {
             if (!definedSettings.pluginName) throw new Error("Cannot access settings before plugin is initialized");
-            return PlainSettings.plugins[definedSettings.pluginName] as any;
+            const name = definedSettings.pluginName;
+            return (PlainSettings.plugins[name] ?? (Settings.plugins[name], PlainSettings.plugins[name])) as any;
         },
         use: settings => useSettings((
             settings
@@ -404,7 +439,7 @@ export function definePluginSettings<
         pluginName: "",
 
         withPrivateSettings<T extends object>() {
-            return this as DefinedSettings<Def, T>;
+            return this as unknown as DefinedSettings<Def, T>;
         }
     };
 

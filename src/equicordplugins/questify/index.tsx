@@ -20,6 +20,7 @@ import { QuestTileContextMenu } from "./components/questTileContextMenu";
 import { getQuestifySettings } from "./settings/access";
 import { resetQuestsToResume, startAutoFetchingQuests, stopAutoFetchingQuests } from "./settings/fetching";
 import { validateIgnoredQuests } from "./settings/ignoredQuests";
+import { showPendingQuestifyNotice } from "./settings/notices";
 import { rerenderQuests, useQuestRerender } from "./settings/rerender";
 import { disposeRestartTracking, initializeRestartTracking, promptToRestartIfDirty, setRestartDirty } from "./settings/restartTracking";
 import { settings } from "./settings/store";
@@ -95,6 +96,10 @@ function enrolledIncompleteButton(args: { quest: Quest, size: string; }): JSX.El
     );
 }
 
+function wrapOrbsBalance(balance: String): JSX.Element {
+    return (<span style={{ fontSize: "90%" }}>{balance}</span>);
+}
+
 export default definePlugin({
     name: "Questify",
     description: "Enhance specific Quest features, disable annoyances, or completely remove Quests.",
@@ -136,6 +141,7 @@ export default definePlugin({
     sortQuests,
     stopQuestAutoComplete,
     useQuestRerender,
+    wrapOrbsBalance,
 
     patches: [
         {
@@ -151,7 +157,7 @@ export default definePlugin({
             // Exports the guildless server list item component used by the Quest button.
             find: '="DOWNLOAD_APPS";function',
             replacement: {
-                match: /(?=\i:\(\)=>\i.{0,30000}?asContainer:!\i.{0,50};let (\i)=\i.forwardRef\(function)/,
+                match: /(?<=\i\.\i\(\i,\{)(?=\i:\(\)=>\i.{0,30000}?let (\i)=function\(\i\)\{let\{ref:)/,
                 replace: "GuildlessServerListItemComponent:()=>$1,"
             }
         },
@@ -198,7 +204,7 @@ export default definePlugin({
         },
         {
             // Hides Quests tab in the DMs tab list.
-            find: ".QUEST_HOME):",
+            find: '.QUEST_HOME)},"quests")',
             predicate: () => getQuestifySettings().disableQuestsEverything,
             replacement: [
                 {
@@ -212,8 +218,8 @@ export default definePlugin({
             find: "QUEST_HOME)},[]),",
             predicate: () => !getQuestifySettings().disableQuestsEverything && getQuestifySettings().disableSponsoredBanner,
             replacement: {
-                match: /(?<=,{questHomeHero:(\i),isLoading:(\i)}=.{0,300}?ORBS_BALANCE_MENU}\)},\[\]\);)/,
-                replace: "$1=null;$2=false;"
+                match: /(?<=,{questHomeHero:(\i),isLoading:(\i),confirmedEmpty:(\i)}=.{0,300}?ORBS_BALANCE_MENU}\)},\[\]\);)/,
+                replace: "$1=null;$2=false;$3=true;"
             }
         },
         {
@@ -223,7 +229,7 @@ export default definePlugin({
             predicate: () => !getQuestifySettings().disableQuestsEverything && getQuestifySettings().disableOrbsAndQuestsBadges,
             replacement: [
                 {
-                    match: /(,\{badges:\i)(?=,displayProfile:\i)/,
+                    match: /(,{badges:\i)(?=,overflowCount:\i,displayProfile:\i)/,
                     replace: '$1.filter(badge=>!["quest_completed","orb_profile_badge"].includes(badge.id))',
                 }
             ]
@@ -233,8 +239,8 @@ export default definePlugin({
             find: "collapsed-with-rewards\":\"collapsed-without-rewards",
             predicate: () => getQuestifySettings().disableAccountPanelPromo || !getQuestifySettings().disableAccountPanelQuestProgress,
             replacement: {
-                match: /(?<=function\(\){)(let (\i)=\(0,\i.\i\)\(\);)/,
-                replace: "void $self.useQuestRerender();$1$2=$self.getQuestPanelOverride($2);"
+                match: /(?<=function\(\)\{)(let (\i)=\(0,\i\.\i\)\(\),\i=\(0,\i\.\i\)\(.{0,55}?\);)(?=switch\(\2\.type\)\{case (\i\.\i\.QUEST):)/,
+                replace: "void $self.useQuestRerender();$1$2=$self.getQuestPanelOverride($2,$3);if(null==$2)return null;"
             }
         },
         {
@@ -260,7 +266,7 @@ export default definePlugin({
             find: ",{progressTextAnimation:",
             predicate: () => !getQuestifySettings().disableQuestsEverything,
             replacement: {
-                match: /(let{percentComplete:.{0,115}?children:\i,useAltStyle:\i=!1}=)(\i)/,
+                match: /(let{percentComplete:[^}]+}=)(\i)/,
                 replace: "const questifyProgress=$self.getQuestPanelPercentComplete({...$2,quest:$2.children?.props?.quest});$1Object.assign({},$2,questifyProgress??{})"
             }
         },
@@ -274,7 +280,7 @@ export default definePlugin({
             }
         },
         {
-            // Formats the Orbs balance on the Quests page with locale string formatting.
+            // Formats the Orbs balance in the default balance counter on the Quests page with locale string formatting.
             find: '("BalanceCounter")',
             predicate: () => !getQuestifySettings().disableQuestsEverything,
             replacement: [
@@ -285,6 +291,17 @@ export default definePlugin({
                 {
                     match: /(?<=children:\i.to\(\i=>`\${\i).toFixed\(0\)/,
                     replace: ".toLocaleString(undefined,{maximumFractionDigits:0})"
+                }
+            ]
+        },
+        {
+            // Formats the Orbs balance in the balance popout on the Quests page with locale string formatting.
+            find: 'location:"BalanceWidgetMenu"',
+            predicate: () => !getQuestifySettings().disableQuestsEverything,
+            replacement: [
+                {
+                    match: /(?<=children:)(\i\?\?0)/,
+                    replace: "$self.wrapOrbsBalance(($1).toLocaleString(undefined,{maximumFractionDigits:0}))"
                 }
             ]
         },
@@ -305,13 +322,47 @@ export default definePlugin({
             ]
         },
         {
-            find: "QUEST_HOME_TILE_HEADER_WATCH_VIDEO})},",
+            // Prevent Video Quests from pausing on lost focus.
+            find: "[QV] | Pausing video | playerState:",
+            predicate: () => !getQuestifySettings().disableQuestsEverything && getQuestifySettings().preventVideoQuestsPausing,
+            replacement: {
+                match: /(?<=setCaptionEnabled\),)({focused:)(\i)/,
+                replace: "$2=true,$1questifyFocused"
+            }
+        },
+        {
+            // Prevent Video Quests from pausing on lost focus.
+            find: ",listenForHlsErrors:!1",
+            predicate: () => !getQuestifySettings().disableQuestsEverything && getQuestifySettings().preventVideoQuestsPausing,
+            replacement: {
+                match: /(?<=pauseOnLostVisibility:)!\i/,
+                replace: "false",
+            }
+        },
+        {
+            find: "QUEST_HOME)},[]),",
+            group: true,
             predicate: () => !getQuestifySettings().disableQuestsEverything,
             replacement: [
                 {
                     // Subscribes the Quest page sort/filter state to Questify rerenders.
-                    match: /(?<=\i\.useRef\(null\);)(?=return\(0,\i\.jsxs\)\("div")/,
-                    replace: "let questRerenderTrigger=$self.useQuestRerender();"
+                    match: /(\{ref:\i,\.\.\.\i\}=\i,\i=\i\.useRef\(null\),)(?=\[\i,\i\]=)/,
+                    replace: "$1questRerenderTrigger=$self.useQuestRerender(),"
+                },
+                {
+                    // Set the initial sort method.
+                    match: /(\i.\i.SUGGESTED)/,
+                    replace: "$self.getLastSortChoice()??$1"
+                },
+                {
+                    // Set the initial filters and update the filters and sort method when they change.
+                    match: /(get\(\i\)\)\?\?)(\i,\[)(\i)(\]\),\i=\i.useCallback\((\i)=>{)(.{0,60}?useCallback\((\i)=>{)/,
+                    replace: "$1$self.getLastFilterChoices()??$2$3,questRerenderTrigger$4$self.setLastSortChoice($5);$6$self.setLastFilterChoices($7);$self.rerenderQuests();"
+                },
+                {
+                    // Update the last used sort and filter choices when the toggle setting for either is changed.
+                    match: /(?<=ALL,\i.useMemo\(\(\)=>\()({sortMethod:(\i),filters:(\i))/,
+                    replace: "$self.setLastSortChoice($2),$self.setLastFilterChoices($3),$1"
                 }
             ]
         },
@@ -322,13 +373,13 @@ export default definePlugin({
             replacement: [
                 {
                     // Overwrite button props for UNENROLLED Quests.
-                    match: /(?<=onClick:\(\)=>{\i\?\.\(\),\i\(\)},text:\i,icon:\i,iconPosition:\i,fullWidth:!0)/,
+                    match: /(?<=,text:\i,icon:\i,iconPosition:\i,fullWidth:!0)(?=,"aria-disabled":\i\|\|void 0)/,
                     replace: ",...($self.getQuestButtonProps(arguments[0])??{})"
                 },
                 {
                     // Overwrite button props for ENROLLED/INCOMPLETE Quests.
-                    match: /(?<=let{quest:\i,taskType:\i,surface:\i.{0,150}?size:\i}=\i;return)(.{0,300}?,size:\i,surface:\i,analyticsCtxQuestContent:\i,analyticsCtxSourceQuestContent:\i}\))/,
-                    replace: " $self.enrolledIncompleteButton(arguments[0])||($1)"
+                    match: /(case \i\.\i\.(?:ENROLLED|INCOMPLETE):return)(?=\(0,\i\.jsx\)\(\i,\{quest:(\i),taskType:\i(?:\.type)?,size:(\i),)/g,
+                    replace: "$1 $self.enrolledIncompleteButton({quest:$2,size:$3})||"
                 }
             ]
         },
@@ -346,12 +397,12 @@ export default definePlugin({
             find: "prevIsQuestAccepted:",
             predicate: () => !getQuestifySettings().disableQuestsEverything && !getQuestifySettings().disableAccountPanelQuestProgress,
             replacement: {
-                match: /(?<=isLoading:\i}=\(0,\i.\i\)\(\),\i=\i\.useContext\(\i\.\i\)\|\|\i&&)(\i)/,
+                match: /(?<=isLoading:\i}=\(0,\i\.\i\)\(\),\i=\i\.useContext\(\i\.\i\),\i=\i\|\|\i&&)(\i)/,
                 replace: "($1||$self.shouldForceQuestPanelVisible(arguments[0].quest))"
             }
         },
         {
-            find: "QUEST_HOME_TILE_HEADER_WATCH_VIDEO})},",
+            find: "questNameHeadingId",
             group: true,
             predicate: () => !getQuestifySettings().disableQuestsEverything,
             replacement: [
@@ -400,7 +451,7 @@ export default definePlugin({
             ]
         },
         {
-            find: "QUEST_HOME_TILE_HEADER_WATCH_VIDEO})},",
+            find: "questNameHeadingId",
             group: true,
             predicate: () => !getQuestifySettings().disableQuestsEverything,
             replacement: [
@@ -433,7 +484,7 @@ export default definePlugin({
         },
         {
             // Adds the Questify sort option to Discord's Quest sort enum.
-            find: "SUGGESTED=\"suggested\",",
+            find: "EXPIRING_SOON=\"expiring_soon\"",
             predicate: () => !getQuestifySettings().disableQuestsEverything,
             replacement: {
                 match: /(?<=\(\((\i)=\{\}\))(?=\.SUGGESTED="suggested",)/,
@@ -455,23 +506,23 @@ export default definePlugin({
             predicate: () => !getQuestifySettings().disableQuestsEverything,
             replacement: [
                 {
-                    // Runs Questify sorting in the hook-safe Quest list path and tracks manual rerenders.
+                    // Applies Questify filtering and sorting before Discord's Quest list hooks.
                     match: /,(\i)=new Map\((\i)\.map/,
-                    replace: ";const questRerenderTrigger=$self.useQuestRerender();const questifySorted=$self.sortQuests($2,arguments[1]?.sortMethod!==\"questify\");let $1=new Map($2.map"
+                    replace: ";const questRerenderTrigger=$self.useQuestRerender();const questifySorted=$self.sortQuests($2,arguments[1]?.sortMethod!==\"questify\");const questifyListChanged=questifySorted!==$2;$2=questifySorted;let $1=new Map($2.map"
                 },
                 {
-                    // Replaces Discord's filtered Quest list with Questify's order only when selected.
-                    match: /(?=if\(0===(\i)\.length\)return\[\];if\(\i\.current\.length>0)/,
-                    replace: "if(arguments[1]?.sortMethod===\"questify\"){$1=questifySorted;};"
-                },
-                {
-                    // Bypasses Discord's memo cache while the Questify sort is active.
+                    // Bypasses Discord's memo cache when Questify changes the list.
                     match: /(?<=if\()(?=\i\.current\.length>0&&\i\.current===)/,
-                    replace: "arguments[1]?.sortMethod!==\"questify\"&&"
+                    replace: "!questifyListChanged&&"
+                },
+                {
+                    // Bypasses the claimed Quest cache when Questify changes the list.
+                    match: /(?<=if\()(?=\i\.current\.length>0&&\i\.current\.length===)/,
+                    replace: "!questifyListChanged&&"
                 },
                 {
                     // If we already applied Questify's sort, skip further sorting.
-                    match: /(?<=\{sortMethod:(\i).{0,750}?return )((\i).sort)/,
+                    match: /(?<=\{sortMethod:(\i).{0,800}?return )((\i).sort)/,
                     replace: "$1===\"questify\"?$3:$2"
                 },
                 {
@@ -631,6 +682,8 @@ export default definePlugin({
         }
 
         onceReady.then(() => {
+            showPendingQuestifyNotice();
+
             if (!getQuestifySettings().disableQuestsEverything) {
                 startPerAccountTasks("PLUGIN_START");
             } else {

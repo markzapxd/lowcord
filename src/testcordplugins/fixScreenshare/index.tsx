@@ -17,7 +17,6 @@ let origHrefDescriptor: PropertyDescriptor | undefined;
 let origGo: ((delta?: number) => void) | undefined;
 let preventMediaError: ((event: ErrorEvent) => void) | null = null;
 let preventMediaRejection: ((event: PromiseRejectionEvent) => void) | null = null;
-let origConsoleError: typeof console.error | null = null;
 let suppressTimer: ReturnType<typeof setTimeout> | undefined;
 let suppressReload = false;
 let streaming = false;
@@ -50,6 +49,10 @@ const onStreamStop = () => {
 };
 
 const onRtcConnectionState = () => {
+    armSuppress();
+};
+
+const onAudioReset = () => {
     armSuppress();
 };
 
@@ -134,6 +137,7 @@ export default definePlugin({
         FluxDispatcher.subscribe("STREAM_START", onStreamStart);
         FluxDispatcher.subscribe("STREAM_STOP", onStreamStop);
         FluxDispatcher.subscribe("RTC_CONNECTION_STATE", onRtcConnectionState);
+        FluxDispatcher.subscribe("AUDIO_RESET", onAudioReset);
         FluxDispatcher.subscribe("STREAM_VIEWER_COUNT_UPDATE", onStreamViewerCountUpdate);
 
         // Use addEventListener so Discord's own window.onerror still runs.
@@ -142,35 +146,21 @@ export default definePlugin({
         preventMediaError = function (event) {
             const msg = event.message ?? "";
             const err = event.error;
-            if (isMediaErrorMsg(msg) || err?.message && isMediaErrorMsg(err.message)) {
-                logErrorSync("error", err ?? msg);
-                event.preventDefault();
-                if (suppressReload) armSuppress(3000);
-            } else {
-                logErrorSync("error", err ?? msg);
-            }
+            const isMedia = isMediaErrorMsg(msg) || (err?.message && isMediaErrorMsg(err.message));
+            if (!isMedia) return;
+            logErrorSync("error", err ?? msg);
+            event.preventDefault();
+            if (suppressReload) armSuppress(3000);
         };
         window.addEventListener("error", preventMediaError);
 
         preventMediaRejection = function (event) {
             const msg = event.reason?.message ?? String(event.reason);
+            if (!isMediaErrorMsg(msg)) return;
             logErrorSync("unhandledRejection", event.reason);
-            if (isMediaErrorMsg(msg)) {
-                event.preventDefault();
-            }
+            event.preventDefault();
         };
         window.addEventListener("unhandledrejection", preventMediaRejection);
-
-        // Discord's FluxDispatcher catches exceptions in handlers and logs them
-        // via console.error. Intercept to capture those too.
-        origConsoleError = console.error;
-        console.error = function (...args: any[]) {
-            const msg = args.map(a => String(a)).join(" ");
-            if (isMediaErrorMsg(msg)) {
-                logErrorSync("console.error", args[0]);
-            }
-            return origConsoleError!.apply(console, args);
-        };
 
         try {
             const proto = Object.getPrototypeOf(window.location) as any;
@@ -221,6 +211,7 @@ export default definePlugin({
         FluxDispatcher.unsubscribe("STREAM_START", onStreamStart);
         FluxDispatcher.unsubscribe("STREAM_STOP", onStreamStop);
         FluxDispatcher.unsubscribe("RTC_CONNECTION_STATE", onRtcConnectionState);
+        FluxDispatcher.unsubscribe("AUDIO_RESET", onAudioReset);
         FluxDispatcher.unsubscribe("STREAM_VIEWER_COUNT_UPDATE", onStreamViewerCountUpdate);
         clearTimeout(suppressTimer);
         suppressReload = false;
@@ -233,10 +224,6 @@ export default definePlugin({
         if (preventMediaRejection) {
             window.removeEventListener("unhandledrejection", preventMediaRejection);
             preventMediaRejection = null;
-        }
-        if (origConsoleError) {
-            console.error = origConsoleError;
-            origConsoleError = null;
         }
         try {
             const proto = Object.getPrototypeOf(window.location) as any;

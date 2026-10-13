@@ -16,10 +16,12 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { useSettings } from "@api/Settings";
 import { downloadSettingsBackup, uploadSettingsBackup } from "@api/SettingsSync/offline";
 import { Button } from "@components/Button";
 import { Divider } from "@components/Divider";
 import { Flex } from "@components/Flex";
+import { FormSwitch } from "@components/FormSwitch";
 import { Heading } from "@components/Heading";
 import { Notice } from "@components/Notice";
 import { Paragraph } from "@components/Paragraph";
@@ -27,6 +29,8 @@ import { SettingsTab, wrapTab } from "@components/settings/tabs/BaseTab";
 import { Margins } from "@utils/margins";
 
 function BackupAndRestoreTab() {
+    const settings = useSettings();
+
     return (
         <SettingsTab>
             <Heading className={Margins.top16}>Backup & Restore</Heading>
@@ -90,7 +94,7 @@ function BackupAndRestoreTab() {
 
             <Flex gap="8px" style={{ flexWrap: "wrap" }}>
                 <Button
-                    onClick={() => downloadSettingsBackup("all")}
+                    onClick={() => downloadSettingsBackup("all", { forceDataStore: settings.experimentalDataStoreExport })}
                     size="small"
                     variant="secondary"
                 >
@@ -109,12 +113,25 @@ function BackupAndRestoreTab() {
                     Export QuickCSS
                 </Button>
                 <Button
-                    onClick={() => downloadSettingsBackup("datastore")}
+                    onClick={() => downloadSettingsBackup("datastore", { forceDataStore: settings.experimentalDataStoreExport })}
                     size="small"
                 >
                     Export DataStore
                 </Button>
             </Flex>
+
+            <Divider className={Margins.bottom20} />
+
+            <Heading>Experimental</Heading>
+            <Notice.Danger className={Margins.bottom16}>
+                These features are experimental and may cause issues. Use with caution.
+            </Notice.Danger>
+            <FormSwitch
+                title="Large DataStore Export"
+                description="Force export and import of DataStore even when it's too large. Uses chunked processing to avoid memory issues but may still fail on extremely large datasets."
+                value={settings.experimentalDataStoreExport}
+                onChange={(v: boolean) => settings.experimentalDataStoreExport = v}
+            />
         </SettingsTab>
     );
 }

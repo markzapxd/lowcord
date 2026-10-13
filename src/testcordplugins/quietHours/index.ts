@@ -38,12 +38,18 @@ export default definePlugin({
     name: "QuietHours",
     description: "Silences notification sounds during a time window you set (e.g. 23:00–08:00). Visual notifications still show.",
     authors: [{ name: "Sharp", id: 0n }],
+    tags: ["Utility"],
     settings,
 
     start() {
         try {
             soundModule = findByProps("playSound", "createSound");
-            if (!soundModule?.playSound) return;
+            if (!soundModule?.playSound) {
+                // Discord moved these; without this the feature just silently stops
+                // muting sounds and there is nothing to grep for.
+                logger.warn("Could not find the sound module; sound muting is inactive this session.");
+                return;
+            }
             originalPlaySound = soundModule.playSound;
             soundModule.playSound = function (...args: any[]) {
                 if (inQuietHours()) return;

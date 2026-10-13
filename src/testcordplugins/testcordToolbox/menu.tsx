@@ -8,20 +8,52 @@ import { openNotificationLogModal } from "@api/Notifications/notificationLog";
 import { isPluginEnabled, isSettingDisabled, isSettingHidden, plugins } from "@api/PluginManager";
 import { Settings, useSettings } from "@api/Settings";
 import { openPluginModal, openSettingsTabModal, PluginsTab, ThemesTab } from "@components/settings";
-import { useAwaiter } from "@utils/react";
+import type { UserThemeHeader } from "@main/themes";
 import { wordsFromCamel, wordsToTitle } from "@utils/text";
+import { themeFileToId } from "@utils/themeIds";
 import { OptionType, Plugin } from "@utils/types";
-import { Menu, showToast, useMemo, useState } from "@webpack/common";
+import { Menu, showToast, useEffect, useState } from "@webpack/common";
 import type { ReactNode } from "react";
 
 import { settings } from ".";
 
-function buildPluginMenu() {
-    const { showPluginMenu } = settings.use(["showPluginMenu"]);
+let cachedThemes: UserThemeHeader[] = [];
+let isFetchingThemes = false;
 
-    // has to be here due to hooks
-    const pluginEntries = buildPluginMenuEntries();
+function getThemesListSync(): UserThemeHeader[] {
+    if (typeof VencordNative !== "undefined" && VencordNative.themes?.getThemesList && !isFetchingThemes) {
+        isFetchingThemes = true;
+        VencordNative.themes.getThemesList().then(t => {
+            if (Array.isArray(t)) cachedThemes = t;
+            isFetchingThemes = false;
+        }).catch(() => {
+            isFetchingThemes = false;
+        });
+    }
+    return cachedThemes;
+}
 
+if (typeof VencordNative !== "undefined" && VencordNative.themes?.getThemesList) {
+    VencordNative.themes.getThemesList().then(t => {
+        if (Array.isArray(t)) cachedThemes = t;
+    }).catch(() => {});
+}
+
+let sortedPluginsCache: Plugin[] | null = null;
+let sortedPluginsCacheSize = 0;
+
+function getSortedPlugins(): Plugin[] {
+    const size = Object.keys(plugins).length;
+    if (!sortedPluginsCache || sortedPluginsCacheSize !== size) {
+        sortedPluginsCacheSize = size;
+        sortedPluginsCache = Object.values(plugins)
+            .filter((p): p is Plugin => !!p && !!p.name)
+            .sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return sortedPluginsCache;
+}
+
+function buildPluginMenu(showPluginMenu = true) {
     if (!showPluginMenu) return null;
 
     return (
@@ -30,54 +62,19 @@ function buildPluginMenu() {
             label="Plugins"
             action={() => openSettingsTabModal(PluginsTab)}
         >
-            {pluginEntries}
+            {buildPluginMenuEntries()}
         </Menu.MenuItem>
     );
 }
 
 export function buildPluginMenuEntries(includeEmpty = false) {
-    const pluginSettings = useSettings().plugins;
+    const pluginSettings = Settings.plugins;
 
-    const [search, setSearch] = useState("");
-
-    const lowerSearch = search.toLowerCase();
-
-    const sortedPlugins = useMemo(() =>
-        Object.values(plugins)
-            .filter(p => p && p.name)
-            .sort((a, b) => a.name.localeCompare(b.name)),
-        []
-    );
-
-    const candidates = useMemo(() =>
-        sortedPlugins
-            .filter(p => {
-                if (!isPluginEnabled(p.name)) return false;
-                if (p.name.endsWith("API")) return false;
-
-                const name = p.name.toLowerCase();
-                return name.includes(lowerSearch);
-            }),
-        [lowerSearch]
-    );
+    const candidates = getSortedPlugins()
+        .filter(p => isPluginEnabled(p.name) && !p.name.endsWith("API"));
 
     return (
         <>
-            <Menu.MenuControlItem
-                id="plugins-search"
-                control={(props, ref) => (
-                    <Menu.MenuSearchControl
-                        {...props}
-                        query={search}
-                        onChange={setSearch}
-                        ref={ref}
-                        autoFocus
-                    />
-                )}
-            />
-
-            <Menu.MenuSeparator />
-
             {candidates
                 .map(p => {
                     const options = [] as ReactNode[];
@@ -103,7 +100,7 @@ export function buildPluginMenuEntries(includeEmpty = false) {
                                 options.push(
                                     <Menu.MenuCheckboxItem
                                         {...baseProps}
-                                        checked={s[key]}
+                                        checked={Boolean(s[key])}
                                         action={() => {
                                             s[key] = !s[key];
                                             if (option.restartNeeded) showToast("Restart to apply the change");
@@ -188,8 +185,7 @@ export function buildPluginMenuEntries(includeEmpty = false) {
 }
 
 function buildLiveFixToggle() {
-    const { plugins } = useSettings(["plugins.TestcordHelper.liveFix", "plugins.TestcordHelper.enabled"]);
-    const helper = plugins.TestcordHelper;
+    const helper = Settings.plugins.TestcordHelper;
     if (!helper?.enabled) return null;
 
     const liveFix = Boolean(helper.liveFix);
@@ -207,28 +203,28 @@ function buildLiveFixToggle() {
     );
 }
 
-export function buildThemeMenu() {
+export function buildThemeMenu(themes?: UserThemeHeader[]) {
     return (
         <Menu.MenuItem
             id="themes"
             label="Themes"
             action={() => openSettingsTabModal(ThemesTab)}
         >
-            {buildThemeMenuEntries()}
+            {buildThemeMenuEntries(themes)}
         </Menu.MenuItem>
     );
 }
 
-export function buildThemeMenuEntries() {
-    const { useQuickCss, enabledThemes } = useSettings(["useQuickCss", "enabledThemes"]);
-    const [themes] = useAwaiter(VencordNative.themes.getThemesList);
+export function buildThemeMenuEntries(themesList?: UserThemeHeader[]) {
+    const { useQuickCss, enabledThemes = [] } = Settings;
+    const themes = themesList ?? getThemesListSync();
 
     return (
         <>
             <Menu.MenuCheckboxItem
                 id="toggle-quickcss"
-                checked={useQuickCss}
-                label={"Enable QuickCSS"}
+                checked={Boolean(useQuickCss)}
+                label="Enable QuickCSS"
                 action={() => {
                     Settings.useQuickCss = !useQuickCss;
                 }}
@@ -245,21 +241,38 @@ export function buildThemeMenuEntries() {
             />
             {!!themes?.length && (
                 <Menu.MenuGroup>
-                    {themes.map(theme => (
-                        <Menu.MenuCheckboxItem
-                            id={`theme-${theme.fileName}`}
-                            key={theme.fileName}
-                            label={theme.fileName}
-                            checked={enabledThemes.includes(theme.fileName)}
-                            action={() => {
-                                if (enabledThemes.includes(theme.fileName)) {
-                                    Settings.enabledThemes = enabledThemes.filter(t => t !== theme.fileName);
-                                } else {
-                                    Settings.enabledThemes = [...enabledThemes, theme.fileName];
-                                }
-                            }}
-                        />
-                    ))}
+                    {themes.map(theme => {
+                        const id = (theme.id || themeFileToId(theme.fileName)).toLowerCase();
+                        const isChecked = enabledThemes.some(t => {
+                            const tl = t.toLowerCase();
+                            return tl === id || tl === theme.fileName.toLowerCase();
+                        });
+
+                        return (
+                            <Menu.MenuCheckboxItem
+                                id={`theme-${theme.fileName}`}
+                                key={theme.fileName}
+                                label={theme.name || theme.fileName}
+                                checked={isChecked}
+                                action={() => {
+                                    if (isChecked) {
+                                        Settings.enabledThemes = enabledThemes.filter(t => {
+                                            const tl = t.toLowerCase();
+                                            return tl !== id && tl !== theme.fileName.toLowerCase();
+                                        });
+                                    } else {
+                                        Settings.enabledThemes = [
+                                            ...enabledThemes.filter(t => {
+                                                const tl = t.toLowerCase();
+                                                return tl !== id && tl !== theme.fileName.toLowerCase();
+                                            }),
+                                            id
+                                        ];
+                                    }
+                                }}
+                            />
+                        );
+                    })}
                 </Menu.MenuGroup>
             )}
         </>
@@ -319,7 +332,22 @@ function buildCustomPluginEntries() {
     return <Menu.MenuGroup>{submenuEntries}</Menu.MenuGroup>;
 }
 
-export function renderPopout(onClose: () => void) {
+export function ToolboxMenu({ onClose }: { onClose: () => void; }) {
+    useSettings();
+    const { showPluginMenu } = settings.use(["showPluginMenu"]);
+    const [themes, setThemes] = useState<UserThemeHeader[]>(() => getThemesListSync());
+
+    useEffect(() => {
+        if (typeof VencordNative !== "undefined" && VencordNative.themes?.getThemesList) {
+            VencordNative.themes.getThemesList().then(t => {
+                if (Array.isArray(t)) {
+                    cachedThemes = t;
+                    setThemes(t);
+                }
+            }).catch(() => {});
+        }
+    }, []);
+
     return (
         <Menu.Menu
             navId="vc-toolbox"
@@ -333,10 +361,14 @@ export function renderPopout(onClose: () => void) {
 
             {buildLiveFixToggle()}
 
-            {buildThemeMenu()}
-            {buildPluginMenu()}
+            {buildThemeMenu(themes)}
+            {buildPluginMenu(showPluginMenu)}
 
             {buildCustomPluginEntries()}
-        </Menu.Menu >
+        </Menu.Menu>
     );
+}
+
+export function renderPopout(onClose: () => void) {
+    return <ToolboxMenu onClose={onClose} />;
 }

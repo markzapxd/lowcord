@@ -24,14 +24,13 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { Paragraph } from "@components/Paragraph";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
-import { findComponentByCodeLazy, findCssClassesLazy, findStoreLazy } from "@webpack";
-import { Constants, React, RestAPI, SettingsRouter, Tooltip } from "@webpack/common";
+import { findComponentByCodeLazy, findCssClassesLazy } from "@webpack";
+import { AuthSessionsStore, Constants, React, RestAPI, SettingsRouter, Tooltip } from "@webpack/common";
 
 import { NewButton, RenameButton } from "./components/RenameButton";
 import { Session, SessionInfo } from "./types";
 import { cl, fetchNamesFromDataStore, getDefaultName, GetOsColor, GetPlatformIcon, savedSessionsCache, saveSessionsToDataStore } from "./utils";
 
-const AuthSessionsStore = findStoreLazy("AuthSessionsStore");
 const TimestampClasses = findCssClassesLazy("timestamp", "blockquoteContainer");
 const BlobMask = findComponentByCodeLazy("!1,lowerBadgeSize:");
 
@@ -63,19 +62,23 @@ export default definePlugin({
             replacement: [
                 {
                     match: /(#{intl::AUTH_SESSIONS_ACTIVE_RECENTLY}.{0,230}role:"listitem",children:\[.{0,15},\{Icon:)\i/,
-                    replace: "$1()=>$self.renderIcon(arguments[0])"
+                    replace: "$1()=>$self.renderIcon(arguments[0])",
+                    noWarn: true
                 },
                 {
                     match: /("horizontal",gap:"xs",children:)\[.{0,250}"text-subtle",children:\i\}\)\]\}\),/,
-                    replace: "$1$self.renderName(arguments[0])}),"
+                    replace: "$1$self.renderName(arguments[0])}),",
+                    noWarn: true
                 },
                 {
                     match: /("text-muted",children:)(\i)(?=\}\)\]\}\),.{0,120}\.client_info\?\.location)/,
-                    replace: "$1$self.renderDescription(arguments[0],$2)"
+                    replace: "$1$self.renderDescription(arguments[0],$2)",
+                    noWarn: true
                 },
                 {
                     match: /:\i\(\i\.approx_last_used_time\).{0,40}\(0,\i\.jsxs?\)\(\i,\{/,
-                    replace: "$&session:arguments[0]?.session,"
+                    replace: "$&session:arguments[0]?.session,",
+                    noWarn: true
                 },
             ]
         },
@@ -198,7 +201,7 @@ export default definePlugin({
         USER_SETTINGS_ACCOUNT_RESET_AND_CLOSE_FORM() {
             const rawSessions = AuthSessionsStore?.getSessions?.();
             if (!Array.isArray(rawSessions)) return;
-            const lastFetchedHashes: string[] = rawSessions.map((session: SessionInfo["session"]) => session?.id_hash).filter(Boolean);
+            const lastFetchedHashes: string[] = rawSessions.map(session => session?.id_hash).filter(Boolean);
 
             // Add new sessions to cache
             lastFetchedHashes.forEach(idHash => {

@@ -5,7 +5,6 @@
  */
 
 import { definePluginSettings } from "@api/Settings";
-import { disableStyle, enableStyle } from "@api/Styles";
 import { BaseText } from "@components/BaseText";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { ErrorCard } from "@components/ErrorCard";
@@ -15,9 +14,7 @@ import { Devs, IS_MAC } from "@utils/constants";
 import { Margins } from "@utils/margins";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { ExperimentStore, React } from "@webpack/common";
-
-import hideBugReport from "./hideBugReport.css?managed";
+import { React } from "@webpack/common";
 
 const KbdStyles = findByPropsLazy("key", "combo");
 const modKey = IS_MAC ? "cmd" : "ctrl";
@@ -117,11 +114,21 @@ export default definePlugin({
                 replace: "$&if($1==null)return;"
             }
         },
+        // Enable playground embed on sent playground links
+        // dev://playground/mana, dev://playground/payments, dev://playground/virtual-currency,
+        // dev://playground/nitro, dev://playground/mfa, dev://playground/cms, dev://playground/void
+        {
+            find: ".useComponentPlaygroundConfigs)()",
+            replacement: {
+                match: /"Revenue".{0,250}getCurrentUser\(\);return/,
+                replace: "$& true||"
+            }
+        },
         {
             // Expands the experiment regex to allow negative numbers as well as text in the last segment of the URL.
             find: '"^dev://experiment/',
             replacement: {
-                match: /(\[0-9\]\+)/,
+                match: /\[0-9\]\+(?=\)\)\?\$")/,
                 replace: "[a-zA-Z0-9-]+"
             }
         },
@@ -142,9 +149,6 @@ export default definePlugin({
         const urlEndCleaned = items[items.length - 1]?.replace(/[^a-zA-Z0-9]+/g, "").toLowerCase();
         return !!labelCleaned && urlEndCleaned !== undefined && labelCleaned === urlEndCleaned;
     },
-
-    start: () => ExperimentStore.getUserExperimentBucket("2026-01-bug-reporter") > 0 && enableStyle(hideBugReport),
-    stop: () => disableStyle(hideBugReport),
 
     settingsAboutComponent: () => {
         return (
@@ -171,7 +175,7 @@ export default definePlugin({
             </Paragraph>
 
             <Paragraph className={Margins.top8}>
-                Only use experiments if you know what you're doing. Equicord is not responsible for any damage caused by enabling experiments.
+                Only use experiments if you know what you're doing. Testcord is not responsible for any damage caused by enabling experiments.
 
                 If you don't know what an experiment does, ignore it. Do not ask us what experiments do either, we probably don't know.
             </Paragraph>

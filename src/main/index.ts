@@ -106,6 +106,8 @@ if (!IS_VANILLA && !IS_EXTENSION) {
         } catch { }
 
         initCsp();
+        require("./privacy/trafficGuard").trafficGuard.init();
+        require("./privacy/dnsResolver").dnsResolver.init();
     });
 }
 

@@ -6,13 +6,12 @@
 
 import "./style.css";
 
-import { HeaderBarButton } from "@api/HeaderBar";
+import { HeaderBarButton, HeaderBarIcon } from "@api/HeaderBar";
 import { ErrorBoundary } from "@components/index";
 import { TestcordDevs } from "@utils/constants";
-import { ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalRoot, openModal } from "@utils/modal";
+import { ModalContent, ModalFooter, openModal } from "@utils/modal";
 import definePlugin from "@utils/types";
-import { findComponentByCodeLazy } from "@webpack";
-import { Button, Forms, NavigationRouter, React, RestAPI, TextInput } from "@webpack/common";
+import { Button, Forms, Modal, NavigationRouter, React, RestAPI, TextInput } from "@webpack/common";
 const FormText = Forms.FormText as any;
 
 const UserIcon = (props: any) => (
@@ -33,7 +32,6 @@ const UserIcon = (props: any) => (
         />
     </svg>
 );
-const HeaderBarIcon = findComponentByCodeLazy(".HEADER_BAR_BADGE_TOP:", '.iconBadge,"top"');
 
 function getErrorMessage(err: any): string {
     const code = err?.body?.code;
@@ -88,17 +86,12 @@ function DirectMessageModal(props: any) {
     };
 
     return (
-        <ModalRoot {...props} title="">
-            <ModalHeader>
-                <Forms.FormTitle tag="h4">Open Direct Message</Forms.FormTitle>
-                <ModalCloseButton onClick={props.onClose} />
-            </ModalHeader>
-
+        <Modal {...props} size="sm" title="Open Direct Message">
             <ModalContent>
-                <Forms.FormTitle tag="h5" style={{ marginTop: "10px" }}>
+                <Forms.FormTitle tag="h5" style={{ marginBottom: "8px" }}>
                     User ID
                 </Forms.FormTitle>
-                <FormText type={"description" as any} style={{ marginBottom: "10px" }}>
+                <FormText type={"description" as any} style={{ marginBottom: "8px" }}>
                     Enter the Discord User ID of the person you want to message
                 </FormText>
                 <TextInput
@@ -106,6 +99,11 @@ function DirectMessageModal(props: any) {
                     value={userId}
                     onChange={setUserId}
                     disabled={loading}
+                    onKeyDown={(e: React.KeyboardEvent) => {
+                        if (e.key === "Enter" && !loading && userId.trim()) {
+                            openDM();
+                        }
+                    }}
                 />
                 {error && (
                     <FormText type={"description" as any} style={{ color: "var(--text-danger)", marginTop: "10px" }}>
@@ -114,24 +112,25 @@ function DirectMessageModal(props: any) {
                 )}
             </ModalContent>
 
-            <ModalFooter style={{ display: "flex", flexDirection: "row-reverse", gap: "16px", alignItems: "center" }}>
-                <Button
-                    color={Button.Colors.BRAND}
-                    disabled={loading || !userId.trim()}
-                    onClick={openDM}
-                >
-                    {loading ? "Opening..." : "Open DM"}
-                </Button>
-                <Button
-                    color={Button.Colors.TRANSPARENT}
-                    look={Button.Looks.LINK}
-                    onClick={props.onClose}
-                    style={{ marginRight: "8px" }}
-                >
-                    Cancel
-                </Button>
+            <ModalFooter>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
+                    <Button
+                        color={Button.Colors.TRANSPARENT}
+                        look={Button.Looks.LINK}
+                        onClick={props.onClose}
+                    >
+                        Cancel
+                    </Button>
+                    <Button
+                        color={Button.Colors.BRAND}
+                        disabled={loading || !userId.trim()}
+                        onClick={openDM}
+                    >
+                        {loading ? "Opening..." : "Open DM"}
+                    </Button>
+                </div>
             </ModalFooter>
-        </ModalRoot>
+        </Modal>
     );
 }
 

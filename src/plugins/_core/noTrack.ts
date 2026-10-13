@@ -21,6 +21,7 @@ import { Devs } from "@utils/constants";
 import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType, StartAt } from "@utils/types";
 import { WebpackRequire } from "@vencord/discord-types/webpack";
+import { Flux, FluxDispatcher } from "@webpack/common";
 
 const settings = definePluginSettings({
     disableAnalytics: {
@@ -28,6 +29,13 @@ const settings = definePluginSettings({
         description: "Disable Discord's tracking (analytics/'science')",
         default: true,
         restartNeeded: true
+    },
+    disableStackDumping: {
+        type: OptionType.BOOLEAN,
+        description: "Print a native stack trace to the console when Discord crashes. Requires full restart.",
+        default: false,
+        restartNeeded: true,
+        target: "DESKTOP"
     }
 });
 
@@ -46,7 +54,7 @@ export default definePlugin({
             predicate: () => settings.store.disableAnalytics,
             replacement: {
                 match: /\(0,\i\.analyticsTrackingStoreMaker\)/,
-                replace: "(()=>{})",
+                replace: "$self.analyticsTrackingStoreMaker",
             },
         },
         {
@@ -74,6 +82,9 @@ export default definePlugin({
 
     flux: {
         TRACK(event: { resolve?: () => void }) {
+            try {
+                VencordNative?.privacy?.incrementCounter?.("tracking");
+            } catch { }
             event?.resolve?.();
         }
     },
@@ -124,7 +135,19 @@ export default definePlugin({
                 Reflect.deleteProperty(Function.prototype, "d");
                 Reflect.deleteProperty(window, "DiscordSentry");
 
-                throw new Error("Sentry successfully disabled");
+                const err = new Error("Sentry successfully disabled");
+                // Prevent the intentional abort error from appearing as an uncaught exception.
+                // The throw is required to abort Sentry's WebpackInstance factory, but we
+                // suppress the global error event so the console stays clean.
+                const suppress = (e: ErrorEvent) => {
+                    if (e.message?.includes("Sentry successfully disabled") || String((e as any).error?.message).includes("Sentry successfully disabled")) {
+                        e.preventDefault();
+                    }
+                };
+                window.addEventListener("error", suppress, { capture: true, once: true });
+                setTimeout(() => window.removeEventListener("error", suppress, { capture: true }), 1000);
+
+                throw err;
             }
         });
 
@@ -138,5 +161,37 @@ export default definePlugin({
                 Reflect.deleteProperty(window, "DiscordSentry");
             }
         });
+    },
+
+    analyticsTrackingStoreMaker() {
+        class AnalyticsTrackingStoreStub extends Flux.Store {
+            static displayName = "AnalyticsTrackingStore";
+
+            requestDrain() { }
+
+            async submitEventsImmediately() {
+                // This is supposed to return a Discord rest response but we can't know what the correct shape would be, because
+                // 1. It's not used anywhere
+                // 2. It takes a dynamic url
+                // Instead we throw an error with the same structure as a Discord rest error which they probably should handle gracefully.
+                // Discord also throws a plain object instead of Error class
+
+                throw {
+                    ok: false,
+                    status: 500,
+                    body: {
+                        message: "Analytics tracking is disabled by NoTrack",
+                        code: 0
+                    },
+                    headers: {},
+                    text: JSON.stringify({
+                        message: "Analytics tracking is disabled by NoTrack",
+                        code: 0
+                    })
+                };
+            }
+        }
+
+        return new AnalyticsTrackingStoreStub(FluxDispatcher);
     }
 });

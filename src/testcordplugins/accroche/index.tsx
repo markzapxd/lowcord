@@ -55,7 +55,7 @@ interface AnchoredUserInfo {
 }
 
 const settings = definePluginSettings({
-    enabled: {
+    isEnabled: {
         type: OptionType.BOOLEAN,
         description: "Enable Hook plugin",
         default: true,
@@ -441,7 +441,7 @@ function startAnchorMonitoring() {
         clearInterval(anchorMonitoringInterval);
     }
 
-    console.log("🔍🔍🔍 STARTING ANCHOR MONITORING 🔍🔍🔍");
+    verboseLog("🔍🔍🔍 STARTING ANCHOR MONITORING 🔍🔍🔍");
 
     anchorMonitoringInterval = setInterval(() => {
         if (!anchoredUserInfo) {
@@ -479,11 +479,6 @@ function startAnchorMonitoring() {
 
         // If we're not in the same channel as the anchored person
         if (myVoiceState.channelId !== anchoredUserVoiceState.channelId) {
-            console.log("🚨🚨🚨 ANCHOR MONITORING - MOVEMENT DETECTED 🚨🚨🚨");
-            console.log(
-                `You: ${myVoiceState.channelId}, Anchored person: ${anchoredUserVoiceState.channelId}`
-            );
-
             log(
                 `⚠️ Monitoring: You have been moved, automatic return to ${anchoredUserInfo.username}'s channel`
             );
@@ -558,9 +553,9 @@ const UserContextMenuPatch: NavContextMenuPatchCallback = (
     // Keep this path quiet: it runs on every user right-click when the plugin is enabled.
     verboseLog(`🔍 Context menu called for ${user?.username || "unknown user"}`);
 
-    if (!settings.store.enabled || !user) {
+    if (!settings.store.isEnabled || !user) {
         verboseLog(
-            `❌ Plugin disabled or user missing - enabled: ${settings.store.enabled
+            `❌ Plugin disabled or user missing - enabled: ${settings.store.isEnabled
             }, user: ${!!user}`
         );
         return;
@@ -637,7 +632,7 @@ export default definePlugin({
 
     flux: {
         async VOICE_STATE_UPDATES({ voiceStates }: { voiceStates: VoiceState[]; }) {
-            if (!settings.store.enabled) return;
+            if (!settings.store.isEnabled) return;
 
             const currentUser = UserStore.getCurrentUser();
             if (!currentUser) return;
@@ -656,9 +651,6 @@ export default definePlugin({
 
             // Anchoring logic (automatically return to the anchored person's channel)
             if (anchoredUserInfo) {
-                console.log(
-                    "🔍🔍🔍 ANCHORING ACTIVE - Checking channel changes 🔍🔍🔍"
-                );
                 verboseLog(
                     `⚓ Anchoring active for ${anchoredUserInfo.username} (${anchoredUserInfo.userId})`
                 );
@@ -671,12 +663,6 @@ export default definePlugin({
                         userId === currentUserId &&
                         channelId !== currentVoiceState.channelId
                     ) {
-                        console.log(
-                            "🚨🚨🚨 MOVEMENT DETECTED - ANCHORING IN PROGRESS 🚨🚨🚨"
-                        );
-                        console.log(
-                            `You: ${currentUserId}, Old channel: ${currentVoiceState.channelId}, New channel: ${channelId}`
-                        );
                         verboseLog(
                             `🔄 You have been moved: ${currentVoiceState.channelId} -> ${channelId}`
                         );
@@ -890,9 +876,13 @@ export default definePlugin({
     },
 
     start() {
-        console.log("🚀🚀🚀 HOOK PLUGIN STARTED 🚀🚀🚀");
-        log("🚀 Hook plugin started");
-        log(`⚙️ Current configuration:
+        // Startup banner is verbose output. It was unconditional, and this plugin was the
+        // slowest thing in the boot pass: two console writes per start, and the second one
+        // interpolates every setting and pushes a multi-line string through the console
+        // capture wrapper, which formats and truncates the arguments. Both go through
+        // verboseLog, which respects the setting, so nothing is lost by gating them.
+        verboseLog("🚀 Hook plugin started");
+        verboseLog(`⚙️ Current configuration:
 - Notifications: ${settings.store.showNotifications ? "ON" : "OFF"}
 - Verbose logs: ${settings.store.verboseLogs ? "ON" : "OFF"}
 - Prevent manual move: ${settings.store.preventSelfMove ? "ON" : "OFF"}
@@ -901,18 +891,8 @@ export default definePlugin({
 - Anchor delay: ${settings.store.anchorDelay}ms
 - Anchor notifications: ${settings.store.anchorNotifications ? "ON" : "OFF"}`);
 
-        // Check that stores are available
-        console.log("🔍 Checking stores:");
-        console.log("- VoiceStateStore:", !!VoiceStateStore);
-        console.log("- ChannelActions:", !!ChannelActions);
-        console.log("- UserStore:", !!UserStore);
-        console.log("- PermissionStore: not imported (normal)");
-
-        // Start periodic monitoring for anchoring
-        if (settings.store.enableAnchor) {
-            console.log("🔍🔍🔍 STARTING ANCHOR MONITORING AT START 🔍🔍🔍");
-            startAnchorMonitoring();
-        }
+        // Periodic monitoring starts only while a user is anchored (see anchorUser).
+        // The VOICE_STATE_UPDATES flux handler already covers movement detection.
 
         // Save the original function if we want to prevent manual moves
         if (settings.store.preventSelfMove && ChannelActions) {

@@ -4,13 +4,14 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Heading } from "@components/Heading";
-import { ModalCloseButton, ModalContent, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
-import { ChannelStore, MessageStore, React, useEffect, useMemo, useRef, useState } from "@webpack/common";
+import type { RenderModalProps } from "@vencord/discord-types";
+import { ChannelStore, MessageStore, Modal, React, showToast, Toasts, Tooltip, useEffect, useMemo, useRef, UserStore, useState } from "@webpack/common";
 
+import { downloadItemsToFolder } from "../utils/download";
 import { extractImages, GalleryItem } from "../utils/extractImages";
 import { fetchMessagesPage } from "../utils/pagination";
 import { GalleryGrid } from "./GalleryGrid";
+import { CheckAllIcon, CheckboxCheckedIcon, CheckboxEmptyIcon, ClearSelectionIcon, DownloadIcon, SpinnerIcon } from "./Icons";
 import { LightboxViewer } from "./LightboxViewer";
 
 type PluginSettings = {
@@ -53,7 +54,7 @@ function pushCacheItem(cache: GalleryCache, item: GalleryItem) {
 function seedCacheFromMessageStore(cache: GalleryCache, channelId: string, settings: PluginSettings) {
     try {
         const localMsgs = MessageStore?.getMessages?.(channelId);
-        const msgsArray: any[] = localMsgs?._array ?? localMsgs?.toArray?.() ?? (Array.isArray(localMsgs) ? localMsgs : []);
+        const msgsArray: any[] = (localMsgs as any)?._array ?? (localMsgs as any)?.toArray?.() ?? (Array.isArray(localMsgs) ? localMsgs : []);
 
         if (msgsArray.length > 0) {
             const extracted = extractImages(msgsArray, channelId, {
@@ -96,11 +97,32 @@ function getOrCreateCache(channelId: string, settings: PluginSettings): GalleryC
     return created;
 }
 
-export function GalleryModal(props: ModalProps & { channelId: string; settings: PluginSettings; }) {
+function getGalleryTitle(channel: any): string {
+    if (!channel) return "Gallery";
+    if (channel.name) return `Gallery — #${channel.name}`;
+    const recipients: string[] | undefined = channel.recipients ?? channel.rawRecipients;
+    if (recipients?.length) {
+        if (recipients.length === 1) {
+            const user = UserStore?.getUser?.(recipients[0]);
+            const name = (user as any)?.globalName ?? user?.username ?? "Direct Message";
+            return `Gallery — @${name}`;
+        }
+        if (recipients.length > 1) {
+            const names = recipients.slice(0, 3).map(id => UserStore?.getUser?.(id)?.username ?? "Unknown").join(", ");
+            const extra = recipients.length > 3 ? ` +${recipients.length - 3}` : "";
+            return `Gallery — Group DM (${names}${extra})`;
+        }
+    }
+    if (typeof channel.isDM === "function" && channel.isDM()) return "Gallery — Direct Message";
+    if (typeof channel.isGroupDM === "function" && channel.isGroupDM()) return "Gallery — Group DM";
+    return "Gallery";
+}
+
+export function GalleryModal(props: RenderModalProps & { channelId: string; settings: PluginSettings; }) {
     const { channelId, settings, ...modalProps } = props;
 
     const channel = ChannelStore?.getChannel?.(channelId);
-    const title = channel?.name ? `Gallery — #${channel.name}` : "Gallery";
+    const title = getGalleryTitle(channel);
 
     const cache = useMemo(() => getOrCreateCache(channelId, settings), [channelId, settings]);
 
@@ -109,6 +131,12 @@ export function GalleryModal(props: ModalProps & { channelId: string; settings: 
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+    const [downloadState, setDownloadState] = useState<{ done: number; total: number } | null>(null);
+    const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
+    const [manualSelectMode, setManualSelectMode] = useState<boolean>(false);
+
+    const isSelectionMode = manualSelectMode || selectedKeys.size > 0;
+    const selectedItems = useMemo(() => items.filter(i => selectedKeys.has(i.key)), [items, selectedKeys]);
 
     const abortRef = useRef<AbortController | null>(null);
 
@@ -178,25 +206,199 @@ export function GalleryModal(props: ModalProps & { channelId: string; settings: 
         void loadNextPages(Math.max(1, Math.floor(settings.preloadPages ?? 2)));
     }, [channelId]);
 
+    useEffect(() => {
+        setSelectedKeys(new Set());
+        setManualSelectMode(false);
+        setViewerIndex(null);
+    }, [channelId]);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === "Escape") {
+                if (document.querySelector('[class*="mediaModal"], [aria-label*="Media Viewer"]')) {
+                    return;
+                }
+
+                if (viewerIndex != null) {
+                    return;
+                }
+
+                if (isSelectionMode) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    setManualSelectMode(false);
+                    setSelectedKeys(new Set());
+                    return;
+                }
+            }
+        };
+
+        window.addEventListener("keydown", handleKeyDown, { capture: true });
+        return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
+    }, [viewerIndex, isSelectionMode]);
+
+    function toggleSelect(index: number) {
+        const key = items[index]?.key;
+        if (!key) return;
+        setSelectedKeys(prev => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+        });
+    }
+
+    function handleSelectAll() {
+        setSelectedKeys(new Set(items.map(i => i.key)));
+    }
+
+    function handleClearSelection() {
+        setManualSelectMode(false);
+        setSelectedKeys(new Set());
+    }
+
+    function handleToggleSelectMode() {
+        if (isSelectionMode) {
+            setManualSelectMode(false);
+            setSelectedKeys(new Set());
+        } else {
+            setManualSelectMode(true);
+        }
+    }
+
     const onCloseAll = () => {
         abortRef.current?.abort();
         modalProps.onClose();
     };
 
+    const downloading = downloadState != null;
+
+    async function handleDownloadAll() {
+        if (!items.length || downloading) return;
+
+        setDownloadState({ done: 0, total: items.length });
+        try {
+            const { saved, failed } = await downloadItemsToFolder(items, (done, total) => setDownloadState({ done, total }));
+            showToast(
+                failed ? `Saved ${saved} of ${items.length} files. ${failed} failed.` : `Saved ${saved} file${saved === 1 ? "" : "s"}.`,
+                failed ? Toasts.Type.FAILURE : Toasts.Type.SUCCESS
+            );
+        } finally {
+            setDownloadState(null);
+        }
+    }
+
+    async function handleDownloadSelected() {
+        if (!selectedItems.length || downloading) return;
+
+        setDownloadState({ done: 0, total: selectedItems.length });
+        try {
+            const { saved, failed } = await downloadItemsToFolder(selectedItems, (done, total) => setDownloadState({ done, total }));
+            showToast(
+                failed ? `Saved ${saved} of ${selectedItems.length} files. ${failed} failed.` : `Saved ${saved} file${saved === 1 ? "" : "s"}.`,
+                failed ? Toasts.Type.FAILURE : Toasts.Type.SUCCESS
+            );
+        } finally {
+            setDownloadState(null);
+        }
+    }
+
     const viewerItem = viewerIndex != null ? items[viewerIndex] : null;
 
     return (
-        <ModalRoot {...modalProps} size={ModalSize.LARGE} aria-label="Gallery">
-            <ModalHeader>
-                <Heading tag="h3" style={{ flex: 1, margin: 0 }}>
-                    {title}
-                </Heading>
-                <ModalCloseButton onClick={onCloseAll} />
-            </ModalHeader>
-            <ModalContent
+        <Modal {...modalProps} onClose={onCloseAll} size="lg" title={title} className="vc-channel-gallery-root">
+            <div
                 className="vc-channel-gallery-modal"
-                style={{ padding: 0, overflow: "hidden" }}
+                style={{ padding: 0, overflow: "hidden", display: "flex", flexDirection: "column", height: "100%" }}
             >
+                {!viewerItem && (
+                    <div className="vc-channel-gallery-header">
+                        <span style={{ flex: "1 1 auto", fontSize: 13, color: "var(--text-muted)", minWidth: 140 }}>
+                            {selectedKeys.size ? `${selectedKeys.size} selected • ${items.length} images` : `${items.length} images`}
+                            {hasMore ? " • more available" : ""}
+                            {downloading ? ` • Downloading ${downloadState?.done}/${downloadState?.total}` : ""}
+                        </span>
+
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            {isSelectionMode ? (
+                                <>
+                                    <Tooltip text={downloading ? "Downloading…" : `Download selected (${selectedKeys.size})`}>
+                                        {(tooltipProps: any) => (
+                                            <button
+                                                {...tooltipProps}
+                                                className="vc-channel-gallery-icon-btn primary vc-channel-gallery-btn-enter"
+                                                disabled={downloading || !selectedKeys.size}
+                                                onClick={handleDownloadSelected}
+                                                aria-label={`Download selected (${selectedKeys.size})`}
+                                            >
+                                                {downloading ? <SpinnerIcon size={16} /> : <DownloadIcon size={16} />}
+                                                <span>Selected ({selectedKeys.size})</span>
+                                            </button>
+                                        )}
+                                    </Tooltip>
+
+                                    <Tooltip text="Select all">
+                                        {(tooltipProps: any) => (
+                                            <button
+                                                {...tooltipProps}
+                                                className="vc-channel-gallery-icon-btn vc-channel-gallery-btn-enter"
+                                                disabled={!items.length || selectedKeys.size === items.length}
+                                                onClick={handleSelectAll}
+                                                aria-label="Select all"
+                                            >
+                                                <CheckAllIcon size={16} />
+                                                <span>Select all</span>
+                                            </button>
+                                        )}
+                                    </Tooltip>
+
+                                    <Tooltip text="Clear">
+                                        {(tooltipProps: any) => (
+                                            <button
+                                                {...tooltipProps}
+                                                className="vc-channel-gallery-icon-btn vc-channel-gallery-btn-enter"
+                                                onClick={handleClearSelection}
+                                                aria-label="Clear"
+                                            >
+                                                <ClearSelectionIcon size={16} />
+                                                <span>Clear</span>
+                                            </button>
+                                        )}
+                                    </Tooltip>
+                                </>
+                            ) : (
+                                <Tooltip text={downloading ? "Downloading…" : "Download all"}>
+                                    {(tooltipProps: any) => (
+                                        <button
+                                            {...tooltipProps}
+                                            className="vc-channel-gallery-icon-btn vc-channel-gallery-btn-enter"
+                                            disabled={!items.length || downloading}
+                                            onClick={handleDownloadAll}
+                                            aria-label="Download all"
+                                        >
+                                            {downloading ? <SpinnerIcon size={16} /> : <DownloadIcon size={16} />}
+                                            <span>Download all</span>
+                                        </button>
+                                    )}
+                                </Tooltip>
+                            )}
+
+                            <Tooltip text={isSelectionMode ? "Exit select mode" : "Select"}>
+                                {(tooltipProps: any) => (
+                                    <button
+                                        {...tooltipProps}
+                                        className="vc-channel-gallery-icon-btn vc-channel-gallery-btn-enter"
+                                        onClick={handleToggleSelectMode}
+                                        aria-label={isSelectionMode ? "Exit select mode" : "Select"}
+                                    >
+                                        {isSelectionMode ? <CheckboxCheckedIcon size={18} /> : <CheckboxEmptyIcon size={18} />}
+                                    </button>
+                                )}
+                            </Tooltip>
+                        </div>
+                    </div>
+                )}
                 {viewerItem ? (
                     <LightboxViewer
                         items={items}
@@ -216,10 +418,12 @@ export function GalleryModal(props: ModalProps & { channelId: string; settings: 
                         onRetry={() => loadNextPages(1)}
                         onLoadMore={() => loadNextPages(1)}
                         onSelect={setViewerIndex}
+                        selectedKeys={selectedKeys}
+                        onToggleSelect={toggleSelect}
+                        isSelectionMode={isSelectionMode}
                     />
                 )}
-            </ModalContent>
-        </ModalRoot>
+            </div>
+        </Modal>
     );
 }
-

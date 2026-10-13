@@ -23,7 +23,7 @@ import { UserStore } from "@webpack/common";
 import { ChromeIcon, DiscordIcon, EdgeIcon, FirefoxIcon, IEIcon, MobileIcon, OperaIcon, SafariIcon, UnknownIcon } from "./components/icons";
 import { SessionInfo } from "./types";
 
-const getDataKey = () => `BetterSessions_savedSessions_${UserStore.getCurrentUser().id}`;
+const getDataKey = () => `BetterSessions_savedSessions_${UserStore.getCurrentUser()?.id ?? "unknown"}`;
 
 export const cl = classNameFactory("vc-betterSessions-");
 export const savedSessionsCache: Map<string, { name: string, isNew: boolean; }> = new Map();
@@ -38,10 +38,20 @@ export function saveSessionsToDataStore() {
 }
 
 export async function fetchNamesFromDataStore() {
-    const savedSessions = await DataStore.get<Map<string, { name: string, isNew: boolean; }>>(getDataKey()) || new Map();
-    savedSessions.forEach((data, idHash) => {
-        savedSessionsCache.set(idHash, data);
-    });
+    const raw = await DataStore.get(getDataKey());
+    if (!raw) return;
+    const entries = raw instanceof Map
+        ? Array.from(raw.entries())
+        : Array.isArray(raw)
+            ? raw
+            : typeof raw === "object"
+                ? Object.entries(raw)
+                : [];
+    for (const [idHash, data] of entries) {
+        if (idHash && data) {
+            savedSessionsCache.set(idHash as string, data as any);
+        }
+    }
 }
 
 export function GetOsColor(os?: string) {
@@ -57,6 +67,8 @@ export function GetOsColor(os?: string) {
         case "Mac OS X":
         case "iOS":
             return ""; // Default to white/black (theme-dependent)
+        case "Horizon OS": // For Meta Quest (not to be confused with Horizon OS for the Nintendo Switch)
+            return "#0081fb"; // A bright blue, more vibrant and strong and a bit darker than Windows
         default:
             return "#f3799a"; // Pink
     }
@@ -68,6 +80,7 @@ export function GetPlatformIcon(platform?: string) {
         case "Discord Android":
         case "Discord iOS":
         case "Discord Client":
+        case "Discord VR":
             return DiscordIcon;
         case "Android Chrome":
         case "Chrome iOS":

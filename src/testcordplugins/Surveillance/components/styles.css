@@ -10,7 +10,13 @@
     gap: 16px;
 }
 
-.vc-surveillance-header,
+.vc-surveillance-header {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.vc-surveillance-header-top,
 .vc-surveillance-section-head,
 .vc-surveillance-target-input {
     display: flex;
@@ -18,9 +24,8 @@
     gap: 10px;
 }
 
-.vc-surveillance-header {
+.vc-surveillance-header-top {
     justify-content: space-between;
-    display: block;
 }
 
 .vc-surveillance-actions,
@@ -60,10 +65,10 @@
     justify-content: space-between;
     gap: 12px;
     padding: 12px;
-    border: 1px solid color-mix(in srgb, var(--brand, var(--brand-experiment, #5865f2)) 18%, var(--border-subtle));
+    border: 1px solid color-mix(in srgb, var(--brand, var(--brand-experiment, var(--background-brand))) 18%, var(--border-subtle));
     border-radius: 8px;
     background:
-        radial-gradient(circle at top, color-mix(in srgb, var(--vc-stats-accent, var(--brand, #5865f2)) 18%, transparent), transparent 58%),
+        radial-gradient(circle at top, color-mix(in srgb, var(--vc-stats-accent, var(--brand, var(--background-brand))) 18%, transparent), transparent 58%),
         var(--background-secondary);
     box-shadow: 0 1px 0 rgb(255 255 255 / 4%) inset, 0 4px 16px rgb(0 0 0 / 8%);
     overflow: hidden;
@@ -78,16 +83,15 @@
     top: 0;
     height: 3px;
     border-radius: 0 0 999px 999px;
-    background: var(--vc-stats-accent, var(--brand, #5865f2));
+    background: var(--vc-stats-accent, var(--brand, var(--background-brand)));
     opacity: .7;
     transform: scaleX(.45);
     transition: opacity .15s ease, transform .15s ease;
 }
 
 .vc-surveillance-user-stat:hover {
-    border-color: color-mix(in srgb, var(--vc-stats-accent, var(--brand, #5865f2)) 42%, var(--border-subtle));
-    box-shadow: var(--elevation-medium), 0 1px 0 rgb(255 255 255 / 6%) inset;
-    filter: brightness(1.04);
+    border-color: color-mix(in srgb, var(--vc-stats-accent, var(--brand, var(--background-brand))) 42%, var(--border-subtle));
+    box-shadow: var(--elevation-medium);
     transform: translateY(-2px);
 }
 
@@ -260,6 +264,10 @@
 .vc-surveillance-target-pill,
 .vc-surveillance-text-action,
 .vc-surveillance-event-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     position: relative;
     border: 1px solid var(--border-subtle);
     border-radius: 6px;
@@ -278,9 +286,7 @@
 .vc-surveillance-text-action:hover,
 .vc-surveillance-event-action:hover {
     background: var(--background-base-low, var(--background-modifier-hover));
-    border-color: color-mix(in srgb, var(--brand, var(--brand-experiment, #5865f2)) 24%, var(--border-subtle));
-    box-shadow: 0 1px 0 rgb(255 255 255 / 4%) inset;
-    filter: brightness(1.04);
+    border-color: color-mix(in srgb, var(--brand, var(--brand-experiment, var(--background-brand))) 24%, var(--border-subtle));
     transform: translateY(-1px);
 }
 
@@ -293,12 +299,57 @@
     transform: translateY(0) scale(.98);
 }
 
+.vc-surveillance-settings-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--background-tertiary);
+    color: var(--interactive-normal, var(--text-normal));
+    cursor: pointer;
+    transition: background-color .15s ease, border-color .15s ease, transform .15s ease, color .15s ease;
+}
+
+.vc-surveillance-settings-btn:hover {
+    background: var(--background-base-low, var(--background-modifier-hover));
+    border-color: color-mix(in srgb, var(--brand, var(--brand-experiment, var(--background-brand))) 40%, var(--border-subtle));
+    color: var(--interactive-active, #fff);
+    transform: translateY(-1px);
+}
+
+.vc-surveillance-settings-btn .vc-surveillance-settings-icon {
+    display: block;
+    transition: transform 0.3s ease;
+}
+
+@keyframes vc-surveillance-gear-spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.vc-surveillance-settings-btn:hover .vc-surveillance-settings-icon {
+    animation: vc-surveillance-gear-spin 2s linear infinite;
+}
+
+.vc-surveillance-settings-btn:active {
+    transform: scale(0.92);
+}
+
 .vc-surveillance-action:focus-visible,
 .vc-surveillance-nav-action:focus-visible,
 .vc-surveillance-filter:focus-visible,
 .vc-surveillance-target-pill:focus-visible,
 .vc-surveillance-text-action:focus-visible,
-.vc-surveillance-event-action:focus-visible {
+.vc-surveillance-event-action:focus-visible,
+.vc-surveillance-settings-btn:focus-visible {
     outline: 2px solid var(--brand, var(--brand-experiment, #5865f2));
     outline-offset: 2px;
 }
@@ -347,7 +398,6 @@
     border-color: var(--brand-500);
     color: var(--brand-260);
     background: color-mix(in srgb, var(--brand-500) 20%, var(--background-tertiary));
-    box-shadow: 0 0 12px color-mix(in srgb, var(--brand-500) 25%, transparent), 0 1px 0 rgb(255 255 255 / 6%) inset;
 }
 
 .vc-surveillance-timeline {
@@ -405,7 +455,7 @@
     bottom: 7px;
     width: 3px;
     border-radius: 999px;
-    background: var(--brand, var(--brand-experiment, #5865f2));
+    background: var(--brand, var(--brand-experiment, var(--background-brand)));
     opacity: 0;
     transform: scaleY(.35);
     transition: opacity .12s ease, transform .12s ease;
@@ -413,8 +463,7 @@
 
 .vc-surveillance-event-row:hover {
     background: var(--background-base-low, var(--background-modifier-hover));
-    border-color: color-mix(in srgb, var(--brand, var(--brand-experiment, #5865f2)) 24%, var(--border-subtle));
-    box-shadow: 0 1px 0 rgb(255 255 255 / 4%) inset;
+    border-color: color-mix(in srgb, var(--brand, var(--brand-experiment, var(--background-brand))) 24%, var(--border-subtle));
     transform: translateX(2px);
 }
 
@@ -428,7 +477,7 @@
 }
 
 .vc-surveillance-event-row:focus-visible {
-    outline: 2px solid var(--brand, var(--brand-experiment, #5865f2));
+    outline: 2px solid var(--brand, var(--brand-experiment, var(--background-brand)));
     outline-offset: 2px;
 }
 
@@ -618,7 +667,7 @@
 }
 
 .vc-surveillance-modal-meta {
-    color: var(--white-500, #fff);
+    color: var(--text-default, #fff);
     font-size: 12px;
 }
 
@@ -659,7 +708,6 @@
 .vc-surveillance-link-preview-image:hover {
     background: var(--background-modifier-hover);
     border-color: color-mix(in srgb, var(--brand, var(--brand-experiment, #5865f2)) 24%, var(--border-subtle));
-    box-shadow: 0 1px 0 rgb(255 255 255 / 4%) inset;
     transform: translateY(-1px);
 }
 
@@ -833,10 +881,6 @@
 
 .vc-surveillance-action {
     color: var(--text-default);
-}
-
-.vc-h2-defaultMargin {
-    margin-bottom: 8px;
 }
 
 .vc-surveillance-osint-summary {

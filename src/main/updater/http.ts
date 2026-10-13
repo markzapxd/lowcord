@@ -25,7 +25,7 @@ import { writeFileSync } from "original-fs";
 import gitHash from "~git-hash";
 import gitRemote from "~git-remote";
 
-import { ASAR_FILE, serializeErrors } from "./common";
+import { ASAR_FILE, serializeErrors, UpdateOutcome } from "./common";
 
 const API_BASE = `https://api.github.com/repos/${gitRemote}`;
 let PendingUpdate: string | null = null;
@@ -42,19 +42,22 @@ async function githubGet<T = any>(endpoint: string) {
 }
 
 async function calculateGitChanges() {
-    const isOutdated = await fetchUpdates();
-    if (!isOutdated) return [];
+    const isOutdated = await fetchUpdate();
+    if (!isOutdated) return { changes: [], diverged: false };
 
     const data = await githubGet(`/compare/${gitHash}...HEAD`);
 
-    return data.commits.map((c: any) => ({
-        hash: c.sha,
-        author: c.author?.login ?? c.commit?.author?.name ?? "Unknown Author",
-        message: c.commit.message.split("\n")[0]
-    }));
+    return {
+        diverged: false,
+        changes: data.commits.map((c: any) => ({
+            hash: c.sha,
+            author: c.author?.login ?? c.commit?.author?.name ?? "Unknown Author",
+            message: c.commit.message.split("\n")[0]
+        }))
+    };
 }
 
-async function fetchUpdates() {
+async function fetchUpdate() {
     const data = await githubGet("/releases/latest");
 
     const hash = data.name.slice(data.name.lastIndexOf(" ") + 1);
@@ -67,7 +70,7 @@ async function fetchUpdates() {
     return true;
 }
 
-async function applyUpdates() {
+async function applyUpdate() {
     if (!PendingUpdate) return true;
 
     const data = await fetchBuffer(PendingUpdate);
@@ -80,6 +83,7 @@ async function applyUpdates() {
 
 ipcMain.handle(IpcEvents.GET_REPO, serializeErrors(() => `https://github.com/${gitRemote}`));
 ipcMain.handle(IpcEvents.GET_UPDATES, serializeErrors(calculateGitChanges));
-ipcMain.handle(IpcEvents.UPDATE, serializeErrors(fetchUpdates));
-ipcMain.handle(IpcEvents.FORCE_UPDATE, serializeErrors(fetchUpdates));
-ipcMain.handle(IpcEvents.BUILD, serializeErrors(applyUpdates));
+// there is no git tree to diverge from in standalone builds
+ipcMain.handle(IpcEvents.UPDATE, serializeErrors(async (): Promise<UpdateOutcome> => (await fetchUpdate() ? "updated" : "upToDate")));
+ipcMain.handle(IpcEvents.FORCE_UPDATE, serializeErrors(async (): Promise<UpdateOutcome> => (await fetchUpdate() ? "updated" : "upToDate")));
+ipcMain.handle(IpcEvents.BUILD, serializeErrors(applyUpdate));

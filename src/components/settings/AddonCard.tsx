@@ -35,6 +35,7 @@ interface Props {
     disabled?: boolean;
     isNew?: boolean;
     sourceBadge?: ReactNode;
+    warningBadge?: ReactNode;
     tooltip?: string;
     onMouseEnter?: MouseEventHandler<HTMLDivElement>;
     onMouseLeave?: MouseEventHandler<HTMLDivElement>;
@@ -44,7 +45,7 @@ interface Props {
     author?: ReactNode;
 }
 
-export function AddonCard({ disabled, isNew, sourceBadge, tooltip, name, infoButton, footer, author, enabled, setEnabled, description, onMouseEnter, onMouseLeave }: Props) {
+export function AddonCard({ disabled, isNew, sourceBadge, warningBadge, tooltip, name, infoButton, footer, author, enabled, setEnabled, description, onMouseEnter, onMouseLeave }: Props) {
     const titleRef = useRef<HTMLDivElement>(null);
     const titleContainerRef = useRef<HTMLDivElement>(null);
 
@@ -61,12 +62,18 @@ export function AddonCard({ disabled, isNew, sourceBadge, tooltip, name, infoBut
                             <div
                                 ref={titleRef}
                                 className={cl("title")}
-                                onMouseOver={() => {
-                                    const title = titleRef.current!;
-                                    const titleContainer = titleContainerRef.current!;
+                                // onMouseEnter, not onMouseOver: over bubbles, so moving the
+                                // pointer between descendants re-ran this for every card in
+                                // the grid, and each run forced a layout via clientWidth and
+                                // scrollWidth before writing two custom properties back.
+                                onMouseEnter={() => {
+                                    const title = titleRef.current;
+                                    const titleContainer = titleContainerRef.current;
+                                    if (!title || !titleContainer) return;
 
-                                    title.style.setProperty("--offset", `${titleContainer.clientWidth - title.scrollWidth}px`);
-                                    title.style.setProperty("--duration", `${Math.max(0.5, (title.scrollWidth - titleContainer.clientWidth) / 7)}s`);
+                                    const overflow = title.scrollWidth - titleContainer.clientWidth;
+                                    title.style.setProperty("--offset", `${-overflow}px`);
+                                    title.style.setProperty("--duration", `${Math.max(0.5, overflow / 7)}s`);
                                 }}
                             >
                                 {name}
@@ -95,6 +102,8 @@ export function AddonCard({ disabled, isNew, sourceBadge, tooltip, name, infoBut
                         )}
                     </Tooltip>
                 )}
+
+                {warningBadge}
 
                 {infoButton}
 

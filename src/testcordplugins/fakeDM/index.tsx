@@ -10,9 +10,9 @@ import { ChatBarButton, ChatBarButtonFactory } from "@api/ChatButtons";
 import * as DataStore from "@api/DataStore";
 import { addChannelToolbarButton, addHeaderBarButton, ChannelToolbarButton, HeaderBarButton, removeChannelToolbarButton, removeHeaderBarButton } from "@api/HeaderBar";
 import { definePluginSettings } from "@api/Settings";
-import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, openModal } from "@utils/modal";
+import { ModalContent, openModal } from "@utils/modal";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
-import { ChannelStore, FluxDispatcher, GuildMemberStore, MessageStore, React, ReactDOM, SelectedChannelStore, UserStore } from "@webpack/common";
+import { ChannelStore, FluxDispatcher, GuildMemberStore, MessageStore, Modal, React, ReactDOM, SelectedChannelStore, UserStore } from "@webpack/common";
 
 const Native = VencordNative.pluginHelpers.fakeDM as PluginNative<typeof import("./native")>;
 const STORAGE_KEY = "fakedm_fakes";
@@ -1075,15 +1075,11 @@ function FakeDMHeaderButton() {
             tooltip="FakeDM"
             onClick={() => {
                 openModal(modalProps => (
-                    <ModalRoot {...modalProps}>
-                        <ModalHeader>
-                            FakeDM
-                            <ModalCloseButton onClick={modalProps.onClose} />
-                        </ModalHeader>
+                    <Modal {...modalProps} size="sm" title="FakeDM">
                         <ModalContent>
                             <FakeDMPanel onClose={modalProps.onClose} btnRect={new DOMRect(0, 0, 0, 0)} />
                         </ModalContent>
-                    </ModalRoot>
+                    </Modal>
                 ));
             }}
         />
@@ -1097,15 +1093,11 @@ function FakeDMChannelButton() {
             tooltip="FakeDM"
             onClick={() => {
                 openModal(modalProps => (
-                    <ModalRoot {...modalProps}>
-                        <ModalHeader>
-                            FakeDM
-                            <ModalCloseButton onClick={modalProps.onClose} />
-                        </ModalHeader>
+                    <Modal {...modalProps} size="sm" title="FakeDM">
                         <ModalContent>
                             <FakeDMPanel onClose={modalProps.onClose} btnRect={new DOMRect(0, 0, 0, 0)} />
                         </ModalContent>
-                    </ModalRoot>
+                    </Modal>
                 ));
             }}
         />
@@ -1113,10 +1105,10 @@ function FakeDMChannelButton() {
 }
 
 // ─── Chat Bar Button ────────────────────────────────────────────────────────
-const FakeDMButton: ChatBarButtonFactory = (props: any) => {
+const FakeDMButton: ChatBarButtonFactory = ({ isMainChat }) => {
     const [btnRect, setBtnRect] = React.useState<DOMRect | null>(null);
 
-    if (fakeDMSettings.store.location !== "chatbar") return null;
+    if (!isMainChat || fakeDMSettings.store.location !== "chatbar") return null;
 
     function handleClick(e: React.MouseEvent) {
         if (btnRect) {

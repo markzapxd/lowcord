@@ -6,33 +6,45 @@
 
 import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
+import { SettingsStore } from "@api/Settings";
 import { UserAreaButton, UserAreaRenderProps } from "@api/UserArea";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { EquicordDevs, TestcordDevs } from "@utils/constants";
 import definePlugin from "@utils/types";
 import type { Channel, VoiceState } from "@vencord/discord-types";
 import { findByCodeLazy, findByProps, findByPropsLazy, findStore } from "@webpack";
-import { ChannelStore, ContextMenuApi, MediaEngineStore, Menu, PermissionsBits, PermissionStore, React, SelectedChannelStore, UserStore, VoiceActions } from "@webpack/common";
+import { ChannelStore, ContextMenuApi, MediaEngineStore, Menu, PermissionsBits, PermissionStore, React, SelectedChannelStore, useMemo, UserStore, VoiceActions } from "@webpack/common";
 
+import { type FakeVoicePreset, PRESET_KEYS, type PresetConfig,PresetIcon } from "./presets";
 import { settings } from "./settings";
 
 const CONTEXT_MENU_KEYS = ["fakeMute", "fakeDeafen", "fakeStream", "fakeGame", "fakeCam", "cutMicTransmission"] as const;
 
 export let faked = false;
 
-// Subscribers notified whenever `faked` changes, so mounted UI (the user-area
-// toggle button) can re-render event-driven instead of polling on an interval.
-const fakedListeners = new Set<() => void>();
+// Every custom user-area button carries its own combination of states. While one is
+// active it wins over the saved settings, so a button drives the live spoof without
+// ever rewriting what the user configured. Any change to the saved settings drops it
+// (see start), handing the live state back to the settings.
+let customConfig: PresetConfig | null = null;
 
-function subscribeFaked(listener: () => void) {
-    fakedListeners.add(listener);
+function isSpoofed(key: keyof PresetConfig) {
+    return customConfig ? customConfig[key] : Boolean(settings.store[key]);
+}
+
+// Subscribers notified whenever the live spoof changes (`faked` or which custom button
+// is active), so mounted UI can re-render event-driven instead of polling on an interval.
+const stateListeners = new Set<() => void>();
+
+function subscribeLiveState(listener: () => void) {
+    stateListeners.add(listener);
     return () => {
-        fakedListeners.delete(listener);
+        stateListeners.delete(listener);
     };
 }
 
-function notifyFakedChanged() {
-    for (const listener of fakedListeners) listener();
+function notifyLiveStateChanged() {
+    for (const listener of stateListeners) listener();
 }
 
 // Direct gateway socket access — fakeMuteDeafen's mechanism. The voiceStateSender
@@ -53,6 +65,31 @@ let micCutoffApplied = false;
 let selfMuteBeforeMicCutoff = false;
 let micCutoffTimeout: ReturnType<typeof setTimeout> | null = null;
 let fakeStreamActive = false;
+
+// Cached sync lookups: findByProps/findStore scan webpack modules on every
+// call. These module identities are stable for the session, so resolve once
+// and reuse. Each getter still tolerates a miss (returns undefined) exactly
+// like the direct call did.
+let cachedActivityApi: any;
+let cachedFrameApi: any;
+let cachedEmbeddedActivitiesStore: any;
+let cachedStreamConnectionStore: any;
+
+function getActivityApi() {
+    return (cachedActivityApi ??= findByProps("su", "_H"));
+}
+
+function getFrameApi() {
+    return (cachedFrameApi ??= findByProps("launchFrame", "refreshProxyTicket", "stopFrame"));
+}
+
+function getEmbeddedActivitiesStore() {
+    return (cachedEmbeddedActivitiesStore ??= findStore("EmbeddedActivitiesStore"));
+}
+
+function getStreamConnectionStore() {
+    return (cachedStreamConnectionStore ??= findStore("StreamRTCConnectionStore"));
+}
 
 function getSelectedVoiceChannel() {
     const selected = SelectedChannelStore.getVoiceChannelId();
@@ -109,7 +146,7 @@ function getEmbeddedActivityLocation(channelId: string) {
 }
 
 async function startActivity(channelId: string) {
-    const activityApi = findByProps("su", "_H");
+    const activityApi = getActivityApi();
     if (!activityApi?.su) return;
 
     await activityApi.su({
@@ -121,19 +158,19 @@ async function startActivity(channelId: string) {
 }
 
 function hasFakeActivity(channelId: string) {
-    const embeddedActivitiesStore = findStore("EmbeddedActivitiesStore");
+    const embeddedActivitiesStore = getEmbeddedActivitiesStore();
     return embeddedActivitiesStore?.getSelfEmbeddedActivityForChannel?.(channelId)?.applicationId === WATCH_TOGETHER_APPLICATION_ID;
 }
 
 function hasFakeStream() {
-    const connectionStore = findStore("StreamRTCConnectionStore");
+    const connectionStore = getStreamConnectionStore();
     return connectionStore?.getAllActiveStreamKeys?.().length > 0;
 }
 
 function leaveActivity(channelId?: string) {
-    const activityApi = findByProps("su", "_H");
-    const frameApi = findByProps("launchFrame", "refreshProxyTicket", "stopFrame");
-    const embeddedActivitiesStore = findStore("EmbeddedActivitiesStore");
+    const activityApi = getActivityApi();
+    const frameApi = getFrameApi();
+    const embeddedActivitiesStore = getEmbeddedActivitiesStore();
     const activity = embeddedActivitiesStore?.getCurrentEmbeddedActivity?.()
         ?? (channelId ? embeddedActivitiesStore?.getSelfEmbeddedActivityForChannel?.(channelId) : null);
     const location = embeddedActivitiesStore?.getConnectedActivityLocation?.()
@@ -152,7 +189,7 @@ function leaveActivity(channelId?: string) {
 }
 
 function syncMicCutoff(enabled: boolean) {
-    const shouldCutMic = enabled && settings.store.cutMicTransmission && getSelectedVoiceChannel();
+    const shouldCutMic = enabled && isSpoofed("cutMicTransmission") && getSelectedVoiceChannel();
 
     if (!shouldCutMic) {
         if (!micCutoffApplied) return;
@@ -191,7 +228,7 @@ function scheduleMicCutoffSync(enabled: boolean, delay = 0) {
 }
 
 async function startStream() {
-    const ConnectionStore = findStore("StreamRTCConnectionStore");
+    const ConnectionStore = getStreamConnectionStore();
 
     const selected = SelectedChannelStore.getVoiceChannelId();
     if (!selected) return;
@@ -215,40 +252,62 @@ async function startStream() {
     }
 }
 
-function makeIcon(enabled?: boolean) {
-    return ({ className }: { className?: string; }) => (
+function Icon({ className, enabled }: { className?: string; enabled?: boolean; }) {
+    const lineLength = 640;
+
+    // Stable identity across renders so the user-area button doesn't
+    // re-diff SVG styles on every panel render.
+    const lineStyle = useMemo<React.CSSProperties>(() => ({
+        strokeDasharray: lineLength,
+        strokeDashoffset: enabled ? lineLength : 0,
+        transition: "stroke-dashoffset 0.1s ease-in-out",
+    }), [enabled]);
+
+    return (
         <svg className={className} xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 512 512">
+            <mask id="FakeVoicePremiumLine">
+                <rect width="100%" height="100%" fill="#ffffff" />
+                <line
+                    className="blackLine"
+                    x1="469"
+                    y1="42"
+                    x2="42"
+                    y2="469"
+                    stroke="#000000"
+                    strokeWidth="128"
+                    strokeLinecap="round"
+                    style={lineStyle}
+                />
+            </mask>
+
             <path
-                fill="currentColor"
+                mask="url(#FakeVoicePremiumLine)"
+                fill={!enabled ? "var(--status-danger)" : "currentColor"}
                 d="M256 48C141.1 48 48 141.1 48 256v40c0 13.3-10.7 24-24 24s-24-10.7-24-24V256C0 114.6 114.6 0 256 0S512 114.6 512 256V400.1c0 48.6-39.4 88-88.1 88L313.6 488c-8.3 14.3-23.8 24-41.6 24H240c-26.5 0-48-21.5-48-48s21.5-48 48-48h32c17.8 0 33.3 9.7 41.6 24l110.4.1c22.1 0 40-17.9 40-40V256c0-114.9-93.1-208-208-208zM144 208h16c17.7 0 32 14.3 32 32V352c0 17.7-14.3 32-32 32H144c-35.3 0-64-28.7-64-64V272c0-35.3 28.7-64 64-64zm224 0c35.3 0 64 28.7 64 64v48c0 35.3-28.7 64-64 64H352c-17.7 0-32-14.3-32-32V240c0-17.7 14.3-32 32-32h16z"
             />
-            {!enabled && (
-                <line
-                    x1="495"
-                    y1="10"
-                    x2="10"
-                    y2="464"
-                    stroke="var(--status-danger)"
-                    strokeWidth="40"
-                />
-            )}
+
+            <line
+                x1="469"
+                y1="42"
+                x2="42"
+                y2="469"
+                stroke="var(--status-danger, currentColor)"
+                strokeWidth="42"
+                strokeLinecap="round"
+                style={lineStyle}
+            />
         </svg>
     );
 }
 
-// Stable icon component identities so React reconciles instead of remounting
-// the SVG subtree on each re-render.
-const EnabledIcon = makeIcon(true);
-const DisabledIcon = makeIcon(false);
-
 function setFakeVoiceEnabled(enabled: boolean) {
     const changed = faked !== enabled;
     faked = enabled;
-    if (changed) notifyFakedChanged();
+    if (changed) notifyLiveStateChanged();
 
     const channel = getSelectedVoiceChannel();
 
-    if (!enabled && settings.store.fakeGame) {
+    if (!enabled && isSpoofed("fakeGame")) {
         leaveActivity(channel?.id);
     }
 
@@ -258,29 +317,25 @@ function setFakeVoiceEnabled(enabled: boolean) {
         return;
     }
 
-    fakeStreamActive = enabled && settings.store.fakeStream && PermissionStore.can(STREAM, channel);
+    fakeStreamActive = enabled && isSpoofed("fakeStream") && PermissionStore.can(STREAM, channel);
 
     if (fakeStreamActive) {
         startStream();
     }
 
-    if (settings.store.fakeGame && enabled && canUseFakeActivity(channel)) {
+    if (isSpoofed("fakeGame") && enabled && canUseFakeActivity(channel)) {
         void startActivity(channel.id);
     }
 
-    if (settings.store.fakeCam && canUseFakeCamera(channel) && MediaEngineStore.isVideoEnabled() !== enabled) {
-        VoiceActions.setVideoEnabled(enabled);
-    }
-
-    if (!enabled) {
-        const ConnectionStore = findStore("StreamRTCConnectionStore");
+    if (!enabled && isSpoofed("fakeStream")) {
+        const ConnectionStore = getStreamConnectionStore();
         for (const streamKey of ConnectionStore.getAllActiveStreamKeys()) {
             stopStreamAction(streamKey, { streamKey, appContext: "app" });
             break;
         }
     }
 
-    if (settings.store.fakeMute || settings.store.fakeDeafen || settings.store.fakeCam) {
+    if (isSpoofed("fakeMute") || isSpoofed("fakeDeafen") || isSpoofed("fakeCam")) {
         syncFakeVoiceState();
     }
 
@@ -291,8 +346,8 @@ function setFakeVoiceEnabled(enabled: boolean) {
 // All folded-in controls (keybinds, device menus, slash commands) route through this
 // so the single voiceStateUpdate patch stays the only interception mechanism.
 function applyAndSync() {
-    const anyFake = settings.store.fakeMute || settings.store.fakeDeafen
-        || settings.store.fakeStream || settings.store.fakeGame || settings.store.fakeCam;
+    const anyFake = isSpoofed("fakeMute") || isSpoofed("fakeDeafen")
+        || isSpoofed("fakeStream") || isSpoofed("fakeGame") || isSpoofed("fakeCam");
 
     if (anyFake && !faked) {
         setFakeVoiceEnabled(true);
@@ -301,6 +356,32 @@ function applyAndSync() {
     } else if (faked) {
         syncFakeVoiceState();
     }
+}
+
+// A custom button becomes the live spoof: fake voice is re-entered around the swap so
+// the stream and activity are torn down against the combination that was actually live
+// and brought back up for the incoming one.
+function applyCustomConfig(config: PresetConfig) {
+    const wasFaked = faked;
+
+    if (wasFaked) setFakeVoiceEnabled(false);
+
+    customConfig = config;
+    notifyLiveStateChanged();
+    applyAndSync();
+
+    // Turning fake voice off entirely never broadcasts, so the previous combination's
+    // spoofed state would otherwise stick around until the next voice state update.
+    if (wasFaked && !faked) syncFakeVoiceState();
+}
+
+// Dropping the custom button hands the live state back to the saved settings.
+function clearCustomConfig() {
+    if (!customConfig) return;
+
+    customConfig = null;
+    notifyLiveStateChanged();
+    applyAndSync();
 }
 
 // Auto-mute-on-deafen (from fakeMuteDeafen): enabling fake deafen implies fake mute.
@@ -446,27 +527,77 @@ function FakeVoiceOptionToggleButton({ iconForeground, hideTooltips, nameplate }
     // Re-render so the button reflects `faked` after it changes via any control
     // (keybind, context menu, slash command). Event-driven: subscribe to the
     // single mutation point (setFakeVoiceEnabled) instead of polling.
-    React.useEffect(() => { return subscribeFaked(forceUpdate); }, []);
-
-    const isEnabled = faked;
-    const Icon = isEnabled ? EnabledIcon : DisabledIcon;
+    React.useEffect(() => { return subscribeLiveState(forceUpdate); }, []);
 
     return (
-        <div className="button-container">
-            <UserAreaButton
-                tooltipText={hideTooltips ? void 0 : isEnabled ? "Disable Fake States" : "Enable Fake States"}
-                icon={<Icon className={iconForeground} />}
-                role="switch"
-                aria-checked={isEnabled}
-                redGlow={isEnabled}
-                plated={nameplate != null}
-                onContextMenu={e => ContextMenuApi.openContextMenu(e, () => <ContextMenu />)}
-                onClick={() => {
-                    setFakeVoiceEnabled(!faked);
-                    forceUpdate();
-                }}
-            />
-        </div>
+        <UserAreaButton
+            tooltipText={hideTooltips ? void 0 : faked ? "Disable Fake States" : "Enable Fake States"}
+            icon={<Icon className={iconForeground} enabled={faked} />}
+            role="switch"
+            aria-checked={faked}
+            redGlow={!faked}
+            plated={nameplate != null}
+            onContextMenu={e => ContextMenuApi.openContextMenu(e, () => <ContextMenu />)}
+            onClick={() => {
+                // This button always speaks for the saved settings, so any custom
+                // button steps aside before it toggles.
+                clearCustomConfig();
+                setFakeVoiceEnabled(!faked);
+                forceUpdate();
+            }}
+        />
+    );
+}
+
+function PresetButton({ preset, iconForeground, hideTooltips, plated }: {
+    preset: FakeVoicePreset;
+    iconForeground?: string;
+    hideTooltips?: boolean;
+    plated: boolean;
+}) {
+    const [, forceUpdate] = React.useReducer(x => x + 1, 0);
+    React.useEffect(() => { return subscribeLiveState(forceUpdate); }, []);
+
+    const active = customConfig === preset.config;
+    const name = preset.name.trim() || "Button";
+
+    return (
+        <UserAreaButton
+            tooltipText={hideTooltips ? void 0 : name}
+            icon={<PresetIcon className={iconForeground} />}
+            aria-label={name}
+            orangeGlow={!active}
+            plated={plated}
+            onClick={() => { applyCustomConfig(preset.config); forceUpdate(); }}
+        />
+    );
+}
+
+function PresetButtons(props: UserAreaRenderProps) {
+    // Subscribes for re-renders, but hands the button a detached copy: applying a
+    // proxied config would hold a settings proxy in the live spoof state, and reading
+    // flags back out of it keeps the button tied to the store instead of its own value.
+    settings.use(["presets"]);
+    const presets = (settings.plain.presets ?? []).map(preset => ({
+        id: preset.id,
+        name: preset.name,
+        config: { ...preset.config }
+    }));
+
+    if (!presets.length) return null;
+
+    return (
+        <>
+            {presets.map(preset => (
+                <PresetButton
+                    key={preset.id}
+                    preset={preset}
+                    iconForeground={props.iconForeground}
+                    hideTooltips={props.hideTooltips}
+                    plated={props.nameplate != null}
+                />
+            ))}
+        </>
     );
 }
 
@@ -558,8 +689,9 @@ const VideoDeviceContext: NavContextMenuPatchCallback = children => {
 
 export default definePlugin({
     name: "FakeVoicePremium",
-    description: "Fake deafen, mute, stream, game, and camera in one plugin. Toggle via the user-area button (right-click for options), audio/video device menus, keybinds, or slash commands.",
+    description: "Fake deafen, mute, stream, game, and camera in one plugin. Toggle via the user-area button (right-click for options), audio/video device menus, keybinds, or slash commands. Save presets to get your own button per setup.",
     authors: [EquicordDevs.omaw, TestcordDevs.x2b, TestcordDevs.dot, TestcordDevs.sirphantom89, TestcordDevs.hyyven],
+    tags: ["Privacy", "Utility", "Voice"],
     dependencies: ["CommandsAPI", "UserAreaAPI"],
     enabledByDefault: false,
     settings,
@@ -569,12 +701,18 @@ export default definePlugin({
         "video-device-context": VideoDeviceContext
     },
     userAreaButton: {
-        icon: makeIcon(faked),
-        render: FakeVoiceOptionToggleButton
+        icon: (props: { className?: string; }) => <Icon {...props} enabled={faked} />,
+        render: (props: UserAreaRenderProps) => (
+            <>
+                <FakeVoiceOptionToggleButton {...props} />
+                <PresetButtons {...props} />
+            </>
+        )
     },
     patches: [
         {
             find: "}voiceStateUpdate(",
+            noWarn: true,
             replacement: {
                 match: /self_mute:([^,]+),self_deaf:([^,]+),self_video:([^,]+)/,
                 replace: "self_mute:$self.toggle($1,'fakeMute'),self_deaf:$self.toggle($2,'fakeDeafen'),self_video:$self.toggle($3,'fakeCam')"
@@ -582,6 +720,7 @@ export default definePlugin({
         },
         {
             find: "OPEN_EMBEDDED_ACTIVITY,{location:",
+            noWarn: true,
             replacement: {
                 match: /\i\._\.dispatch\(\i\.\i\.OPEN_EMBEDDED_ACTIVITY,\{location:\i,applicationId:\i,/,
                 replace: "$self.shouldOpenEmbeddedActivity()&&$&"
@@ -589,6 +728,7 @@ export default definePlugin({
         },
         {
             find: "handleOpenActivityPopout",
+            noWarn: true,
             replacement: {
                 match: /\i\.open\(\i\.\i\.ACTIVITY_POPOUT,.{0,80}?defaultHeight:480\}\)/,
                 replace: "$self.shouldOpenEmbeddedActivity()&&$&"
@@ -596,6 +736,7 @@ export default definePlugin({
         },
         {
             find: "CAMERA_PREVIEW]:",
+            noWarn: true,
             replacement: {
                 match: /d\.set\(\i,\i\),(\i)===(\i\.\i)\.VIDEO.{0,100}?\2\.HAVEN&&null==\i&&\(\i=\i\)/,
                 replace: "(($1!==$2.ACTIVITY||$self.shouldOpenEmbeddedActivity())&&($1!==$2.VIDEO||$self.shouldOpenStreamPip()))&&($&)",
@@ -613,11 +754,11 @@ export default definePlugin({
 
             scheduleMicCutoffSync(faked);
 
-            if (settings.store.fakeGame && faked && myVoiceState && canUseFakeActivity(channel) && !hasFakeActivity(selected)) {
+            if (isSpoofed("fakeGame") && faked && myVoiceState && canUseFakeActivity(channel) && !hasFakeActivity(selected)) {
                 void startActivity(selected);
             }
 
-            if (settings.store.fakeStream && faked && myVoiceState && PermissionStore.can(STREAM, channel)) {
+            if (isSpoofed("fakeStream") && faked && myVoiceState && PermissionStore.can(STREAM, channel)) {
                 fakeStreamActive = true;
 
                 if (!hasFakeStream()) {
@@ -679,12 +820,18 @@ export default definePlugin({
             originalSocketSend = socket.send;
             socket.send = function (op: number, data: any, ...args: any[]) {
                 if (op === 4 && data && faked) {
-                    if (settings.store.fakeMute) data.self_mute = true;
-                    if (settings.store.fakeDeafen) data.self_deaf = true;
-                    if (settings.store.fakeCam) data.self_video = true;
+                    if (isSpoofed("fakeMute")) data.self_mute = true;
+                    if (isSpoofed("fakeDeafen")) data.self_deaf = true;
+                    if (isSpoofed("fakeCam")) data.self_video = true;
                 }
                 return originalSocketSend.apply(this, [op, data, ...args]);
             };
+        }
+        // Touching any of the states by hand (settings page, context menu, keybinds,
+        // slash commands) hands the live spoof back to those settings, so a custom
+        // button never leaves the UI claiming a combination that isn't in effect.
+        for (const key of PRESET_KEYS) {
+            SettingsStore.addChangeListener(`plugins.${settings.pluginName}.${key}`, clearCustomConfig);
         }
         document.addEventListener("keydown", handleKeydown);
     },
@@ -694,10 +841,14 @@ export default definePlugin({
             socket.send = originalSocketSend;
             originalSocketSend = undefined;
         }
+        for (const key of PRESET_KEYS) {
+            SettingsStore.removeChangeListener(`plugins.${settings.pluginName}.${key}`, clearCustomConfig);
+        }
         document.removeEventListener("keydown", handleKeydown);
+        customConfig = null;
         setFakeVoiceEnabled(false);
     },
-    shouldOpenEmbeddedActivity: () => !(faked && settings.store.fakeGame),
+    shouldOpenEmbeddedActivity: () => !(faked && isSpoofed("fakeGame")),
     shouldOpenStreamPip: () => !(faked && fakeStreamActive),
-    toggle: (value: boolean, key: keyof typeof settings.store) => (faked ? settings.store[key] : value)
+    toggle: (value: boolean, key: keyof PresetConfig) => (faked ? isSpoofed(key) : value)
 });

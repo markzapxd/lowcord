@@ -60,6 +60,10 @@ export const manualBadgeFlags = {
     ActiveDeveloper: 1 << 22,
 } as const;
 
+export type FlairType = "none" | "app" | "verifiedApp" | "official";
+
+export const VERIFIED_BOT_FLAG = 1 << 16;
+
 export interface ManualProfileData {
     id: string;
     username: string;
@@ -79,6 +83,12 @@ export interface ManualProfileData {
     nitro: boolean;
     nitroLevel: number;
     boostMonths: number;
+    flair: FlairType;
+    showAccountAgeBadge: boolean;
+    gameTimeHours: number;
+    streamHours: number;
+    gameVarietyCount: number;
+    giftingBadgeIds: string[];
     avatarDecoration: string;
     decorationAsset: string;
     nameplateAsset: string;
@@ -138,13 +148,15 @@ export function clearTarget() {
 }
 
 export function makeDateForUser(userId: string, totalMonths: number): Date {
+    const validMonths = Number.isFinite(totalMonths) ? totalMonths : 1;
     let hash = 0;
-    for (let i = 0; i < userId.length; i++) {
-        hash = ((hash << 5) - hash + userId.charCodeAt(i)) | 0;
+    const strId = String(userId || "");
+    for (let i = 0; i < strId.length; i++) {
+        hash = ((hash << 5) - hash + strId.charCodeAt(i)) | 0;
     }
     const seed = Math.abs(hash);
     const now = new Date();
-    const target = new Date(now.getFullYear(), now.getMonth() - totalMonths, 1);
+    const target = new Date(now.getFullYear(), now.getMonth() - validMonths, 1);
     const maxDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
     target.setDate(((seed % maxDay) + 1));
     return target;
@@ -186,6 +198,12 @@ function getDefaultManualProfile(): ManualProfileData {
         nitro: false,
         nitroLevel: -1,
         boostMonths: -1,
+        flair: "none",
+        showAccountAgeBadge: true,
+        gameTimeHours: -1,
+        streamHours: -1,
+        gameVarietyCount: -1,
+        giftingBadgeIds: [],
         avatarDecoration: "",
         decorationAsset: "",
         nameplateAsset: "",
@@ -257,6 +275,29 @@ export function getManualProfile(): ManualProfileData {
     };
 }
 
+function parseAccentColor(value: unknown): number | null {
+    if (value == null || value === "") return null;
+    const n = typeof value === "number" ? value : Number(value as string);
+    return Number.isFinite(n) && n >= 0 && n <= 0xffffff ? n : null;
+}
+
+function applyFlair(profile: ManualProfileData, target: Record<string, any>) {
+    switch (profile.flair) {
+        case "app":
+            target.bot = true;
+            break;
+        case "verifiedApp":
+            target.bot = true;
+            target.flags = (target.flags ?? 0) | VERIFIED_BOT_FLAG;
+            target.publicFlags = (target.publicFlags ?? 0) | VERIFIED_BOT_FLAG;
+            break;
+        case "official":
+            target.system = true;
+            target.bot = true;
+            break;
+    }
+}
+
 function createManualUser(profile: ManualProfileData): User {
     const me = UserStore.getCurrentUser();
     const id = profile.id || me?.id || "";
@@ -272,7 +313,7 @@ function createManualUser(profile: ManualProfileData): User {
         publicFlags: profile.publicFlags || (base as any)?.publicFlags || 0,
         flags: profile.publicFlags || (base as any)?.flags || 0,
         premiumType: profile.premiumType || (base as any)?.premiumType || 0,
-        accentColor: profile.accentColor ? Number(profile.accentColor) : ((base as any)?.accentColor ?? null),
+        accentColor: parseAccentColor(profile.accentColor) ?? ((base as any)?.accentColor ?? null),
         usernameNormalized: (profile.username || (base as any)?.username || "").toLowerCase(),
         bot: profile.bot || (base as any)?.bot || false,
         avatarDecorationData: (profile.avatarDecoration || profile.decorationAsset)
@@ -290,16 +331,23 @@ function createManualUser(profile: ManualProfileData): User {
                 },
             }
             : ((base as any)?.collectibles ?? null),
-        createdAt: profile.createdAt
-            ? new Date(profile.createdAt + "T12:00:00Z")
-            : (base as any)?.createdAt ?? new Date(SnowflakeUtils.extractTimestamp(id)),
+        createdAt: (() => {
+            if (profile.createdAt) {
+                const dateStr = profile.createdAt.includes("T") ? profile.createdAt : profile.createdAt + "T12:00:00Z";
+                const d = new Date(dateStr);
+                if (!isNaN(d.getTime())) return d;
+            }
+            return (base as any)?.createdAt ?? new Date(SnowflakeUtils.extractTimestamp(id));
+        })(),
         premiumSince: profile.premiumType > 0
-            ? makeDateForUser(id, [1, 2, 3, 6, 12, 24, 36, 72][profile.nitroLevel] ?? 1)
+            ? makeDateForUser(id, [1, 3, 6, 12, 24, 36, 60, 72][profile.nitroLevel] ?? 1)
             : ((base as any)?.premiumSince ?? undefined),
         premiumGuildSince: profile.boostMonths >= 0
             ? makeDateForUser(id, [1, 2, 3, 6, 9, 12, 15, 18, 24][profile.boostMonths] ?? 1)
             : ((base as any)?.premiumGuildSince ?? undefined),
     } as unknown as User;
+
+    applyFlair(profile, user as unknown as Record<string, any>);
 
     return user;
 }
@@ -310,13 +358,13 @@ function createManualTarget(profile: ManualProfileData): CachedTarget {
     const id = profile.id || me?.id || "";
     const realProfile = (UserProfileStore.getUserProfile(id) ?? {}) as any;
 
-    const accentColor = profile.accentColor ? Number(profile.accentColor) : (realProfile.accentColor ?? null);
-    const accentColor2 = profile.accentColor2 ? Number(profile.accentColor2) : null;
+    const accentColor = parseAccentColor(profile.accentColor) ?? (realProfile.accentColor ?? null);
+    const accentColor2 = parseAccentColor(profile.accentColor2);
     const themeColors = accentColor != null ? [accentColor, accentColor2 ?? accentColor] : undefined;
 
     const hasNitro = profile.premiumType > 0 || (realProfile.premiumType ?? 0) > 0;
     const { nitroLevel } = profile;
-    const NITRO_M = [1, 2, 3, 6, 12, 24, 36, 72];
+    const NITRO_M = [1, 3, 6, 12, 24, 36, 60, 72];
     const premiumSince = hasNitro
         ? (profile.premiumType > 0 ? makeDateForUser(id, NITRO_M[nitroLevel] ?? 1) : (realProfile.premiumSince ?? null))
         : null;
@@ -377,7 +425,7 @@ export async function loadTarget(targetId: string): Promise<CachedTarget> {
         try {
             user = await UserUtils.getUser(targetId);
         } catch (e) {
-            logger.error("Failed to fetch user", e);
+            logger.warn("Failed to fetch user", e);
             throw new Error("Could not load that user. Check the ID.");
         }
     }
@@ -387,11 +435,22 @@ export async function loadTarget(targetId: string): Promise<CachedTarget> {
     try {
         profile = await fetchUserProfile(targetId, undefined, false);
     } catch (e) {
-        logger.warn("Failed to fetch profile, falling back to user only", e);
+        logger.debug("Failed to fetch profile, falling back to user only", e);
         profile = UserProfileStore.getUserProfile(targetId);
     }
 
     user = UserStore.getUser(targetId) ?? user;
+    const fetchedUser = profile?.user ?? null;
+    if (fetchedUser?.collectibles != null && (user as any).collectibles == null) {
+        try {
+            Object.defineProperty(user, "collectibles", {
+                value: fetchedUser.collectibles,
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            });
+        } catch { /* ignore */ }
+    }
 
     cached = {
         id: targetId,

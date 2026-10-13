@@ -60,9 +60,32 @@ export interface RuntimeError {
     at: number;
 }
 
+export interface RuntimeHookEvidence {
+    owner: string;
+    hook: string;
+    priority: number;
+}
+
+export interface ResourceDelta {
+    timers: number;
+    listeners: number;
+    observers: number;
+    subscriptions: number;
+    hookLayers: number;
+}
+
+export interface CallbackPercentiles {
+    p50Ms: number;
+    p95Ms: number;
+    p99Ms: number;
+}
+
 interface PluginHealthEntry {
     patchFailures: PatchFailure[];
     runtimeErrors: RuntimeError[];
+    runtimeHooks?: RuntimeHookEvidence[];
+    resourceDelta?: ResourceDelta;
+    callbackPercentiles?: CallbackPercentiles;
 }
 
 export type { PluginHealthEntry };
@@ -81,6 +104,7 @@ export interface SessionRecord {
     plugins: Record<string, {
         patchFailures: number;
         runtimeErrors: number;
+        sourceChanges?: number;
     }>;
 }
 
@@ -105,10 +129,48 @@ const UNSTABLE_RATIO = 0.4;
 /** Debounce delay before flushing session summary to DataStore. */
 const FLUSH_DEBOUNCE_MS = 5_000;
 
+export interface CrashLogEntry {
+    timestamp: number;
+    pluginName?: string;
+    reason: string;
+    stack?: string;
+}
+
+export interface PluginStateChangeEntry {
+    timestamp: number;
+    pluginName: string;
+    enabled: boolean;
+}
+
+const DB_KEY_SAFE_MODE = "TestCord_SafeMode_v1";
+const DB_KEY_QUARANTINE = "TestCord_Quarantine_v1";
+const DB_KEY_CRASH_LOGS = "TestCord_CrashLogs_v1";
+const DB_KEY_PLUGIN_CHANGES = "TestCord_PluginChanges_v1";
+const DB_KEY_IGNORE_SOURCE_HEALTH = "PluginHealth_IgnoreSourceHealth_v1";
+const DB_KEY_IGNORE_SOURCE_HISTORY = "PluginHealth_IgnoreSourceHistory_v1";
+
+let safeModeEnabled = false;
+let safeModeLoaded = false;
+let quarantinedPlugins: string[] = [];
+// Mirror of `quarantinedPlugins` for O(1) membership. `isQuarantined` runs on every
+// isPluginEnabled() call, which happens from render paths (typing indicator, user area,
+// plugin cards, every renderMessageDecoration guard). Array#includes walked the whole
+// quarantine list twice per call, twice per plugin, on every render tick.
+const quarantinedSet = new Set<string>();
+let quarantineLoaded = false;
+let crashHistory: CrashLogEntry[] = [];
+let crashLogsLoaded = false;
+let pluginStateChanges: PluginStateChangeEntry[] = [];
+let pluginChangesLoaded = false;
+let ignoreSourceHealth = false;
+let ignoreSourceHistory = false;
+let sourceSettingsLoaded = false;
+
 const DB_KEY_HISTORY = "PluginHealthHistory_v1";
 
 const registry = new Map<string, PluginHealthEntry>();
 const listeners = new Set<() => void>();
+let runtimeHookProvider: ((plugin: string) => RuntimeHookEvidence[]) | null = null;
 
 const currentSession: SessionRecord = createSession();
 let history: SessionRecord[] = [];
@@ -140,7 +202,7 @@ function truncate(value: string): string {
 function ensureEntry(plugin: string): PluginHealthEntry {
     let entry = registry.get(plugin);
     if (!entry) {
-        entry = { patchFailures: [], runtimeErrors: [] };
+        entry = { patchFailures: [], runtimeErrors: [], runtimeHooks: [] };
         registry.set(plugin, entry);
     }
     return entry;
@@ -151,9 +213,10 @@ function push<T>(list: T[], value: T) {
     if (list.length > MAX_ENTRIES_PER_PLUGIN) list.shift();
 }
 
-function bumpSessionCounter(plugin: string, kind: "patchFailures" | "runtimeErrors") {
-    const existing = currentSession.plugins[plugin] ??= { patchFailures: 0, runtimeErrors: 0 };
-    existing[kind]++;
+function bumpSessionCounter(plugin: string, kind: "patchFailures" | "runtimeErrors" | "sourceChanges") {
+    if (!plugin || plugin === "Unknown source") return;
+    const existing = currentSession.plugins[plugin] ??= { patchFailures: 0, runtimeErrors: 0, sourceChanges: 0 };
+    existing[kind] = (existing[kind] ?? 0) + 1;
     currentSession.endedAt = Date.now();
     scheduleFlush();
 }
@@ -168,9 +231,27 @@ function notify() {
     }
 }
 
+async function loadSourceSettings(): Promise<{ ignoreHealth: boolean; ignoreHistory: boolean }> {
+    if (!sourceSettingsLoaded) {
+        try {
+            const [health, hist] = await Promise.all([
+                DataStore.get<boolean>(DB_KEY_IGNORE_SOURCE_HEALTH),
+                DataStore.get<boolean>(DB_KEY_IGNORE_SOURCE_HISTORY)
+            ]);
+            if (typeof health === "boolean") ignoreSourceHealth = health;
+            if (typeof hist === "boolean") ignoreSourceHistory = hist;
+        } catch (err) {
+            console.warn("[PluginHealth] Failed to load source change settings:", err);
+        }
+        sourceSettingsLoaded = true;
+    }
+    return { ignoreHealth: ignoreSourceHealth, ignoreHistory: ignoreSourceHistory };
+}
+
 async function loadHistory() {
     if (historyLoaded) return;
     historyLoaded = true; // set optimistically to avoid re-entrant loads
+    void loadSourceSettings();
 
     try {
         const stored = await DataStore.get<SessionRecord[]>(DB_KEY_HISTORY);
@@ -218,29 +299,61 @@ async function flushNow() {
     }
 }
 
-function computeStability(plugin: string): StabilityScore {
+/**
+ * `enabledPlugins` is looked up once per session per plugin by `computeStability`,
+ * and the Health tab recomputes every plugin's score on each profiler tick. Scanning
+ * the ~700-entry array each time made that pass quadratic. The array is always
+ * reassigned (never mutated in place), so caching on its identity is exact.
+ */
+const enabledPluginsSets = new WeakMap<object, { source: string[] | undefined; set: Set<string>; }>();
+
+function sessionEnabledPlugins(session: { enabledPlugins?: string[]; }): Set<string> {
+    const cached = enabledPluginsSets.get(session);
+    if (cached && cached.source === session.enabledPlugins) return cached.set;
+
+    const set = new Set(session.enabledPlugins ?? []);
+    enabledPluginsSets.set(session, { source: session.enabledPlugins, set });
+    return set;
+}
+
+function computeStability(plugin: string, options?: { excludeSourceChanges?: boolean; excludePastHistory?: boolean; }): StabilityScore {
     let sessionsSeen = 0;
     let sessionsBroken = 0;
 
     // Include the current session too, but only if the plugin is in
     // enabledPlugins (otherwise "seen" is not meaningful).
-    const sessions = [...history, currentSession];
+    const sessions = [...history.filter(s => s.id !== currentSession.id), currentSession];
     for (const session of sessions) {
-        if (!session.enabledPlugins.includes(plugin)) continue;
+        const counts = session.plugins?.[plugin];
+        // A plugin counts as "seen" this session if it was registered as
+        // enabled OR if it recorded any counts. The latter matters at boot:
+        // webpack patch failures fire during patching, before
+        // `registerEnabledPlugins` runs, so the plugin may not yet be in
+        // `enabledPlugins` even though it clearly ran this session.
+        const seen = sessionEnabledPlugins(session).has(plugin) || counts != null;
+        if (!seen) continue;
         sessionsSeen++;
-        const counts = session.plugins[plugin];
-        if (counts && (counts.patchFailures > 0 || counts.runtimeErrors > 0)) {
-            sessionsBroken++;
+        if (counts) {
+            const isPast = session.id !== currentSession.id;
+            const ignorePast = options?.excludePastHistory ?? (isPast && ignoreSourceHistory);
+            if (isPast && ignorePast) {
+                continue;
+            }
+            const excludeSource = options?.excludeSourceChanges ?? (isPast ? false : ignoreSourceHealth);
+            const hasPatch = counts.patchFailures > 0;
+            const hasRuntime = counts.runtimeErrors > 0;
+            const hasSource = !excludeSource && (counts.sourceChanges ?? 0) > 0;
+            if (hasPatch || hasRuntime || hasSource) {
+                sessionsBroken++;
+            }
         }
     }
 
     const ratio = sessionsSeen === 0 ? NaN : sessionsBroken / sessionsSeen;
 
     let badge: StabilityBadge;
-    if (sessionsSeen < MIN_SESSIONS_FOR_BADGE) {
-        badge = "unknown";
-    } else if (sessionsBroken === 0) {
-        badge = "stable";
+    if (sessionsBroken === 0) {
+        badge = sessionsSeen < MIN_SESSIONS_FOR_BADGE ? "unknown" : "stable";
     } else if (ratio >= UNSTABLE_RATIO) {
         badge = "unstable";
     } else {
@@ -278,30 +391,16 @@ export const PluginHealth = {
         // we do not want to blow up the ring buffer with the same message.
         // For conflicts, collapse by find+moduleId+kind (ignore match/error
         // since multiple replacements on the same module produce redundant entries).
-        const isConflict = failure.kind === "conflict";
         const duplicate = entry.patchFailures.find(f =>
             f.kind === failure.kind
             && f.find === failure.find
-            && (isConflict
-                ? f.moduleId === failure.moduleId
-                : f.match === failure.match)
+            && f.match === failure.match
         );
         if (duplicate) {
             duplicate.at = Date.now();
             if (failure.moduleId && duplicate.moduleId !== failure.moduleId) {
                 // Track the most recent module id we saw the failure on.
                 duplicate.moduleId = failure.moduleId;
-            }
-            // For conflicts, accumulate plugin names in the error field rather
-            // than overwriting with each new conflicting plugin.
-            if (isConflict && failure.error) {
-                const existingPlugins = duplicate.error ?? "";
-                const newPlugin = failure.error.replace("Also patched by: ", "");
-                if (!existingPlugins.includes(newPlugin)) {
-                    duplicate.error = existingPlugins
-                        ? `${existingPlugins}, ${newPlugin}`
-                        : failure.error;
-                }
             }
             notify();
             return;
@@ -312,7 +411,7 @@ export const PluginHealth = {
             error: failure.error ? truncate(failure.error) : undefined,
             at: Date.now()
         });
-        bumpSessionCounter(plugin, "patchFailures");
+        bumpSessionCounter(plugin, failure.kind === "codeChanged" ? "sourceChanges" : "patchFailures");
         notify();
     },
 
@@ -322,12 +421,10 @@ export const PluginHealth = {
     recordRuntimeError(plugin: string, source: string, error: unknown) {
         if (!plugin) return;
         const entry = ensureEntry(plugin);
-        const message = error instanceof Error
-            ? `${error.name}: ${error.message}\n${error.stack ?? ""}`
-            : String(error);
+        const { message, stack } = describeRejection(error);
         push(entry.runtimeErrors, {
             source,
-            error: truncate(message),
+            error: truncate([message, stack].filter(Boolean).join("\n")),
             at: Date.now()
         });
         bumpSessionCounter(plugin, "runtimeErrors");
@@ -351,11 +448,14 @@ export const PluginHealth = {
     /** Get a snapshot of a plugin's health entry, or `undefined` if the plugin is healthy. */
     get(plugin: string): PluginHealthEntry | undefined {
         const entry = registry.get(plugin);
-        if (!entry) return undefined;
-        if (!entry.patchFailures.length && !entry.runtimeErrors.length) return undefined;
+        const runtimeHooks = runtimeHookProvider?.(plugin) ?? [];
+        if (!entry && !runtimeHooks.length) return undefined;
         return {
-            patchFailures: [...entry.patchFailures],
-            runtimeErrors: [...entry.runtimeErrors]
+            patchFailures: [...(entry?.patchFailures ?? [])],
+            runtimeErrors: [...(entry?.runtimeErrors ?? [])],
+            runtimeHooks,
+            resourceDelta: entry?.resourceDelta,
+            callbackPercentiles: entry?.callbackPercentiles
         };
     },
 
@@ -366,7 +466,10 @@ export const PluginHealth = {
             if (entry.patchFailures.length || entry.runtimeErrors.length) {
                 snapshot.set(name, {
                     patchFailures: [...entry.patchFailures],
-                    runtimeErrors: [...entry.runtimeErrors]
+                    runtimeErrors: [...entry.runtimeErrors],
+                    runtimeHooks: runtimeHookProvider?.(name) ?? [],
+                    resourceDelta: entry.resourceDelta,
+                    callbackPercentiles: entry.callbackPercentiles
                 });
             }
         }
@@ -374,16 +477,25 @@ export const PluginHealth = {
     },
 
     /** Whether the given plugin has any recorded issues. */
-    hasIssues(plugin: string): boolean {
+    hasIssues(plugin: string, options?: { excludeSourceChanges?: boolean }): boolean {
         const entry = registry.get(plugin);
-        return !!entry && (entry.patchFailures.length > 0 || entry.runtimeErrors.length > 0);
+        if (!entry) return false;
+        const excludeSource = options?.excludeSourceChanges ?? ignoreSourceHealth;
+        const patchFailures = excludeSource
+            ? entry.patchFailures.filter(f => f.kind !== "codeChanged")
+            : entry.patchFailures;
+        return patchFailures.length > 0 || entry.runtimeErrors.length > 0;
     },
 
     /** Total number of plugins with recorded issues. */
-    totalUnhealthyPlugins(): number {
+    totalUnhealthyPlugins(options?: { excludeSourceChanges?: boolean }): number {
+        const excludeSource = options?.excludeSourceChanges ?? ignoreSourceHealth;
         let count = 0;
         for (const entry of registry.values()) {
-            if (entry.patchFailures.length || entry.runtimeErrors.length) count++;
+            const patchFailures = excludeSource
+                ? entry.patchFailures.filter(f => f.kind !== "codeChanged")
+                : entry.patchFailures;
+            if (patchFailures.length || entry.runtimeErrors.length) count++;
         }
         return count;
     },
@@ -410,6 +522,18 @@ export const PluginHealth = {
         notify();
     },
 
+    /** Clear recorded runtime errors for a plugin, dropping the entry if nothing is left. */
+    clearRuntimeErrors(plugin: string) {
+        const entry = registry.get(plugin);
+        if (!entry) return;
+        if (entry.runtimeErrors.length === 0) return;
+        entry.runtimeErrors = [];
+        if (!entry.patchFailures.length) {
+            registry.delete(plugin);
+        }
+        notify();
+    },
+
     /**
      * Clear everything in memory. Does NOT wipe persisted history — call
      * `clearHistory()` for that.
@@ -424,8 +548,8 @@ export const PluginHealth = {
      * Compute the stability score for a plugin across the rolling session
      * window (including the current session).
      */
-    getStability(plugin: string): StabilityScore {
-        return computeStability(plugin);
+    getStability(plugin: string, options?: { excludeSourceChanges?: boolean }): StabilityScore {
+        return computeStability(plugin, options);
     },
 
     /** Snapshot of the recorded session history (oldest first). */
@@ -466,6 +590,241 @@ export const PluginHealth = {
     subscribe(listener: () => void): () => void {
         listeners.add(listener);
         return () => listeners.delete(listener);
+    },
+
+    setRuntimeHookProvider(provider: ((plugin: string) => RuntimeHookEvidence[]) | null) {
+        runtimeHookProvider = provider;
+        notify();
+    },
+
+    // ─── Source Change Settings ─────────────────────────────
+
+    async loadSourceSettings(): Promise<{ ignoreHealth: boolean; ignoreHistory: boolean; }> {
+        return loadSourceSettings();
+    },
+
+    isIgnoreSourceHealth(): boolean {
+        return ignoreSourceHealth;
+    },
+
+    async setIgnoreSourceHealth(ignore: boolean): Promise<void> {
+        ignoreSourceHealth = ignore;
+        sourceSettingsLoaded = true;
+        try {
+            await DataStore.set(DB_KEY_IGNORE_SOURCE_HEALTH, ignore);
+        } catch (err) {
+            console.warn("[PluginHealth] Failed to persist ignoreSourceHealth state:", err);
+        }
+        notify();
+    },
+
+    isIgnoreSourceHistory(): boolean {
+        return ignoreSourceHistory;
+    },
+
+    async setIgnoreSourceHistory(ignore: boolean): Promise<void> {
+        ignoreSourceHistory = ignore;
+        sourceSettingsLoaded = true;
+        try {
+            await DataStore.set(DB_KEY_IGNORE_SOURCE_HISTORY, ignore);
+        } catch (err) {
+            console.warn("[PluginHealth] Failed to persist ignoreSourceHistory state:", err);
+        }
+        notify();
+    },
+
+    // ─── Safe Mode & Crash Recovery ─────────────────────────
+
+    async loadSafeMode(): Promise<boolean> {
+        if (!safeModeLoaded) {
+            try {
+                safeModeEnabled = (await DataStore.get<boolean>(DB_KEY_SAFE_MODE)) ?? false;
+            } catch {
+                safeModeEnabled = false;
+            }
+            safeModeLoaded = true;
+        }
+        return safeModeEnabled;
+    },
+
+    isSafeModeEnabled(): boolean {
+        return safeModeEnabled;
+    },
+
+    async setSafeMode(enabled: boolean): Promise<void> {
+        safeModeEnabled = enabled;
+        safeModeLoaded = true;
+        try {
+            await DataStore.set(DB_KEY_SAFE_MODE, enabled);
+        } catch (err) {
+            console.warn("[PluginHealth] Failed to persist safe mode state:", err);
+        }
+        notify();
+    },
+
+    // ─── Plugin Quarantine ──────────────────────────────────
+
+    async loadQuarantine(): Promise<string[]> {
+        if (!quarantineLoaded) {
+            try {
+                const stored = await DataStore.get<string[]>(DB_KEY_QUARANTINE);
+                if (Array.isArray(stored)) quarantinedPlugins = stored;
+            } catch {
+                quarantinedPlugins = [];
+            }
+            quarantinedSet.clear();
+            for (const name of quarantinedPlugins) quarantinedSet.add(name);
+            quarantineLoaded = true;
+        }
+        return [...quarantinedPlugins];
+    },
+
+    getQuarantinedPlugins(): string[] {
+        return [...quarantinedPlugins];
+    },
+
+    isQuarantined(pluginName: string): boolean {
+        return quarantinedSet.has(pluginName);
+    },
+
+    async quarantinePlugin(pluginName: string): Promise<void> {
+        if (!quarantinedSet.has(pluginName)) {
+            quarantinedPlugins.push(pluginName);
+            quarantinedSet.add(pluginName);
+            quarantineLoaded = true;
+            try {
+                await DataStore.set(DB_KEY_QUARANTINE, quarantinedPlugins);
+            } catch (err) {
+                console.warn("[PluginHealth] Failed to persist quarantine state:", err);
+            }
+            notify();
+        }
+    },
+
+    async unquarantinePlugin(pluginName: string): Promise<void> {
+        if (quarantinedSet.has(pluginName)) {
+            quarantinedPlugins = quarantinedPlugins.filter(p => p !== pluginName);
+            quarantinedSet.delete(pluginName);
+            quarantineLoaded = true;
+            try {
+                await DataStore.set(DB_KEY_QUARANTINE, quarantinedPlugins);
+            } catch (err) {
+                console.warn("[PluginHealth] Failed to persist quarantine state:", err);
+            }
+            notify();
+        }
+    },
+
+    // ─── Crash History Log ──────────────────────────────────
+
+    async loadCrashHistory(): Promise<CrashLogEntry[]> {
+        if (!crashLogsLoaded) {
+            try {
+                const stored = await DataStore.get<CrashLogEntry[]>(DB_KEY_CRASH_LOGS);
+                if (Array.isArray(stored)) crashHistory = stored;
+            } catch {
+                crashHistory = [];
+            }
+            crashLogsLoaded = true;
+        }
+        return [...crashHistory];
+    },
+
+    getCrashHistory(): CrashLogEntry[] {
+        return [...crashHistory];
+    },
+
+    async recordCrash(entry: Omit<CrashLogEntry, "timestamp">): Promise<void> {
+        const fullEntry: CrashLogEntry = {
+            ...entry,
+            timestamp: Date.now()
+        };
+        crashHistory.unshift(fullEntry);
+        if (crashHistory.length > 50) crashHistory.pop();
+        crashLogsLoaded = true;
+        try {
+            await DataStore.set(DB_KEY_CRASH_LOGS, crashHistory);
+        } catch (err) {
+            console.warn("[PluginHealth] Failed to persist crash log:", err);
+        }
+        notify();
+
+        // Auto-quarantine: a plugin that crashed three or more times within
+        // the last 24 hours is isolated so the next boot starts without it.
+        // The user can restore it from the Crash Recovery card.
+        if (entry.pluginName && !quarantinedSet.has(entry.pluginName)) {
+            const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+            const recentCrashes = crashHistory.filter(
+                c => c.pluginName === entry.pluginName && c.timestamp >= dayAgo
+            ).length;
+            if (recentCrashes >= 3) {
+                await this.quarantinePlugin(entry.pluginName);
+            }
+        }
+    },
+
+    async clearCrashHistory(): Promise<void> {
+        crashHistory = [];
+        try {
+            await DataStore.set(DB_KEY_CRASH_LOGS, []);
+        } catch (err) {
+            console.warn("[PluginHealth] Failed to clear crash history:", err);
+        }
+        notify();
+    },
+
+    // ─── Plugin State Change Log ────────────────────────────
+
+    async loadPluginChanges(): Promise<PluginStateChangeEntry[]> {
+        if (!pluginChangesLoaded) {
+            try {
+                const stored = await DataStore.get<PluginStateChangeEntry[]>(DB_KEY_PLUGIN_CHANGES);
+                if (Array.isArray(stored)) pluginStateChanges = stored;
+            } catch {
+                pluginStateChanges = [];
+            }
+            pluginChangesLoaded = true;
+        }
+        return [...pluginStateChanges];
+    },
+
+    getRecentPluginChanges(): PluginStateChangeEntry[] {
+        return [...pluginStateChanges];
+    },
+
+    async recordPluginChange(pluginName: string, enabled: boolean): Promise<void> {
+        const entry: PluginStateChangeEntry = {
+            timestamp: Date.now(),
+            pluginName,
+            enabled
+        };
+        pluginStateChanges.unshift(entry);
+        if (pluginStateChanges.length > 50) pluginStateChanges.pop();
+        pluginChangesLoaded = true;
+
+        // Keep the current session's enabled list truthful for tools that
+        // diff "what changed since the last healthy session".
+        const set = new Set(currentSession.enabledPlugins);
+        if (enabled) set.add(pluginName);
+        else set.delete(pluginName);
+        currentSession.enabledPlugins = Array.from(set);
+
+        try {
+            await DataStore.set(DB_KEY_PLUGIN_CHANGES, pluginStateChanges);
+        } catch (err) {
+            console.warn("[PluginHealth] Failed to persist plugin change log:", err);
+        }
+        notify();
+    },
+
+    async clearPluginChanges(): Promise<void> {
+        pluginStateChanges = [];
+        try {
+            await DataStore.set(DB_KEY_PLUGIN_CHANGES, []);
+        } catch (err) {
+            console.warn("[PluginHealth] Failed to clear plugin change log:", err);
+        }
+        notify();
     }
 };
 
@@ -473,4 +832,109 @@ export const PluginHealth = {
 // and consumed by external tools like the reporter without a static import cycle.
 if (typeof globalThis !== "undefined") {
     (globalThis as any).__pluginHealth = PluginHealth;
+}
+
+// ─── Global error capture ────────────────────────────────────────────────
+// Catches errors that none of the explicit wrappers (start/stop/flux) see:
+// async callbacks, event handlers, timers. Attribution is best-effort from
+// the stack, mirroring NetworkMonitor. Patterns are defined locally to keep
+// this module dependency-light (it runs early during boot).
+const GLOBAL_ERROR_PLUGIN_PATTERNS = [
+    /testcordplugins[/\\]([^/\\]+?)[/\\]/,
+    /equicordplugins[/\\]([^/\\]+?)[/\\]/,
+    /userplugins[/\\]([^/\\]+?)[/\\]/
+];
+let lastUnknownErrorAt = 0;
+
+const IGNORED_GLOBAL_ERROR_PATTERNS = [
+    /ResizeObserver loop completed with undelivered notifications/i,
+    /ResizeObserver loop limit exceeded/i,
+    /The play\(\) request was interrupted/i,
+    /AbortError/i,
+    /^Script error\.?$/i,
+    /HTTPResponseError:.*\[429\]/i,
+    /Failed to fetch/i,
+    /NetworkError/i,
+    /Load failed/i,
+    /url parse[\s\S]*libdiscore/i,
+    /Sentry successfully disabled/i
+];
+
+/**
+ * Rejections are not always Errors. Discord's REST layer rejects with plain
+ * `{ code, message }` objects, and `String(value)` on those produces the literal
+ * "[object Object]" — losing the message and the stack, and (because the
+ * ignore-list matches the same string) letting routine AbortError/429/network
+ * noise be reported as plugin crashes. Pull the useful fields out instead.
+ */
+export function describeRejection(reason: unknown): { message: string; stack: string; } {
+    if (reason instanceof Error) {
+        // Keep the name prefix: callers (and issue templates) match on it.
+        const name = reason.name && reason.name !== "Error" ? `${reason.name}: ` : "";
+        return { message: `${name}${reason.message}`, stack: reason.stack ?? "" };
+    }
+
+    if (reason && typeof reason === "object") {
+        const obj = reason as { name?: unknown; message?: unknown; stack?: unknown; code?: unknown; status?: unknown; body?: unknown; };
+
+        const name = typeof obj.name === "string" ? obj.name : "";
+        let message = typeof obj.message === "string" ? obj.message : "";
+
+        if (!message && obj.body != null) {
+            try {
+                message = typeof obj.body === "string" ? obj.body : JSON.stringify(obj.body);
+            } catch { /* circular or unserializable body; fall back to the name */ }
+        }
+
+        const code = typeof obj.code === "number" ? ` (code ${obj.code})` : "";
+        const status = typeof obj.status === "number" ? ` (status ${obj.status})` : "";
+        // A named rejection with no message is still worth keeping: the name is
+        // what the ignore-list patterns (e.g. AbortError) actually test for.
+        const described = [name, message].filter(Boolean).join(": ") + code + status;
+
+        return {
+            message: described || "[object Object]",
+            stack: typeof obj.stack === "string" ? obj.stack : described || "[object Object]"
+        };
+    }
+
+    const text = String(reason ?? "");
+    return { message: text, stack: text };
+}
+
+function isIgnoredGlobalError(message: string, stack: string): boolean {
+    const combined = `${message}\n${stack}`;
+    return IGNORED_GLOBAL_ERROR_PATTERNS.some(pattern => pattern.test(combined));
+}
+
+function attributeGlobalError(source: string, error: unknown) {
+    try {
+        const { message, stack } = describeRejection(error);
+
+        if (isIgnoredGlobalError(message, stack)) return;
+
+        let plugin = "Unknown source";
+        for (const pattern of GLOBAL_ERROR_PLUGIN_PATTERNS) {
+            const match = stack.match(pattern);
+            if (match) {
+                plugin = match[1];
+                break;
+            }
+        }
+        if (plugin === "Unknown source") {
+            // Discord's own code is noisy; keep unattributed errors but
+            // throttle them so they cannot flood the buffer.
+            const now = Date.now();
+            if (now - lastUnknownErrorAt < 5_000) return;
+            lastUnknownErrorAt = now;
+        }
+        PluginHealth.recordRuntimeError(plugin, source, error ?? new Error(source));
+    } catch {
+        // The capture hook itself must never throw.
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener("error", e => attributeGlobalError("window.onerror", e.error ?? e.message));
+    window.addEventListener("unhandledrejection", e => attributeGlobalError("unhandledrejection", e.reason));
 }

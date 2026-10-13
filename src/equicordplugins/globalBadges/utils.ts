@@ -37,9 +37,16 @@ export const serviceMap: Record<string, string> = {
 const blockedMods = ["vencord", "equicord"];
 
 export async function loadBadges() {
-    const url = settings.store.apiUrl.endsWith("/") ? settings.store.apiUrl + "users" : settings.store.apiUrl + "/users";
-    const globalBadges = await fetch(url, { cache: "no-cache" }).then(r => r.json());
-    const filteredUsers: Record<string, typeof globalBadges.users[string]> = {};
+    try {
+        const url = settings.store.apiUrl.endsWith("/") ? settings.store.apiUrl + "users" : settings.store.apiUrl + "/users";
+        // `no-cache` forces a revalidation round trip on every poll even when the server
+        // sent a usable cache lifetime or a matching ETag. Honouring the normal HTTP cache
+        // keeps the 30-minute poll from re-downloading an unchanged badge list.
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const globalBadges = await res.json();
+        if (!globalBadges?.users) return;
+        const filteredUsers: Record<string, typeof globalBadges.users[string]> = {};
 
     for (const key in globalBadges.users) {
         filteredUsers[key] = globalBadges.users[key].filter(b => {
@@ -83,4 +90,5 @@ export async function loadBadges() {
     }
 
     GlobalBadges = filteredUsers;
+    } catch {}
 }

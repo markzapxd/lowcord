@@ -26,7 +26,7 @@ const Classes = findCssClassesLazy("animating", "baseLayer", "bg", "layer", "lay
 const SECTION_ICONS: Record<string, Icon> = {
     profile_section: PencilSparkleIcon,
     user_section: UserIcon,
-    equicord_section: TestCordIcon as any,
+    testcord_section: TestCordIcon as any,
     billing_section: CreditCardIcon,
     app_section: AppsIcon,
     games_and_apps_section: GameControllerIcon,
@@ -102,6 +102,7 @@ export default definePlugin({
     patches: [
         {
             find: "this.renderArtisanalHack()",
+            noWarn: true,
             replacement: [
                 {
                     match: /class (\i)( extends \i\.PureComponent.+?jsx\)\(\1,\{mode:)/,
@@ -111,12 +112,13 @@ export default definePlugin({
                 { // Lazy-load contents
                     match: /createPromise:\(\)=>([^:}]*?),webpackId:"?\d+"?,name:(?!="CollectiblesShop")"[^"]+"/g,
                     replace: "$&,_:$1",
-                    predicate: () => settings.store.eagerLoad
+                    predicate: () => settings.store.eagerLoad && false // disabled: eagerly loading all settings chunks causes modal lag with many plugins
                 }
             ]
         },
         { // For some reason standardSidebarView also has a small fade-in
             find: 'minimal:"contentColumnMinimal"',
+            noWarn: true,
             replacement: [
                 {
                     match: /(?=\(0,\i\.\i\)\((\i),\{from:\{position:"absolute")/,
@@ -131,6 +133,7 @@ export default definePlugin({
         },
         { // Disable fade animations for settings menu
             find: '"data-mana-component":"layer-modal"',
+            noWarn: true,
             replacement: [
                 {
                     match: /(\i)\.animated\.div(?=,\{"data-mana-component":"layer-modal")/,
@@ -145,6 +148,7 @@ export default definePlugin({
         },
         { // Disable initial and exit delay for settings menu
             find: "headerId:void 0,headerIdIsManaged:!1",
+            noWarn: true,
             replacement: {
                 match: /let (\i)=300/,
                 replace: "let $1=0"
@@ -153,14 +157,16 @@ export default definePlugin({
         },
         { // Load menu TOC eagerly
             find: "handleOpenSettingsContextMenu=",
+            noWarn: true,
             replacement: {
                 match: /(?=handleOpenSettingsContextMenu=.{0,100}?null!=\i&&.{0,100}?(await [^};]*?\)\)))/,
                 replace: "_vencordBetterSettingsEagerLoad=(async ()=>$1)();"
             },
-            predicate: () => settings.store.eagerLoad
+            predicate: () => settings.store.eagerLoad && false // disabled: eager TOC load fights with lazy panels on big setups
         },
         { // Settings cog context menu
             find: "#{intl::USER_SETTINGS_ACTIONS_MENU_LABEL}",
+            noWarn: true,
             predicate: () => settings.store.organizeMenu,
             replacement: [
                 {
@@ -200,8 +206,8 @@ export default definePlugin({
             if (!item?.props) continue;
             const { key, props } = item;
 
-            if (key === "equicord_plugins" || key === "equicord_themes") {
-                const children = key === "equicord_plugins"
+            if (key === "testcord_plugins" || key === "testcord_themes") {
+                const children = key === "testcord_plugins"
                     ? buildPluginMenuEntries()
                     : buildThemeMenuEntries();
 

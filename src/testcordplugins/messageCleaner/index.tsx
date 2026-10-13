@@ -13,10 +13,11 @@ import { definePluginSettings } from "@api/Settings";
 import { TestcordDevs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import type { Channel, Message } from "@vencord/discord-types";
+import { MessageType } from "@vencord/discord-types/enums";
 import { ChannelStore, Menu, RestAPI, UserStore } from "@webpack/common";
 
 const settings = definePluginSettings({
-    enabled: {
+    isEnabled: {
         type: OptionType.BOOLEAN,
         description: "Enable MessageCleaner plugin",
         default: true,
@@ -72,6 +73,20 @@ const settings = definePluginSettings({
         minValue: 0,
         maxValue: 365,
         stickToMarkers: false,
+    },
+    deleteRetries: {
+        type: OptionType.SLIDER,
+        description: "Retries per message when a delete fails, after confirming the message is still there (0 = give up immediately)",
+        default: 3,
+        markers: [0, 1, 3, 5],
+        minValue: 0,
+        maxValue: 10,
+        stickToMarkers: false,
+    },
+    verifyAfterFailure: {
+        type: OptionType.BOOLEAN,
+        description: "After a failed delete, check whether the message is actually gone before retrying (a request can succeed even when the response fails)",
+        default: true,
     },
 });
 
@@ -134,11 +149,26 @@ function debugLog(message: string) {
     }
 }
 
+// System messages that are not real chat. Everything else the API returns as a non-zero
+// type is still ordinary user content and must stay deletable - notably REPLY (19), which
+// is what a reply to someone else's message comes back as.
+const SYSTEM_MESSAGE_TYPES: ReadonlySet<number> = new Set([
+    MessageType.RECIPIENT_ADD,
+    MessageType.RECIPIENT_REMOVE,
+    MessageType.CALL,
+    MessageType.CHANNEL_NAME_CHANGE,
+    MessageType.CHANNEL_ICON_CHANGE,
+    MessageType.GUILD_INCIDENT_ALERT_MODE_ENABLED,
+    MessageType.GUILD_INCIDENT_ALERT_MODE_DISABLED,
+    MessageType.GUILD_INCIDENT_REPORT_RAID,
+    MessageType.GUILD_INCIDENT_REPORT_FALSE_ALARM
+]);
+
 // Function to check if a message can be deleted
 function canDeleteMessage(message: Message, currentUserId: string): boolean {
     try {
         // System messages
-        if (settings.store.skipSystemMessages && message.type !== 0) {
+        if (settings.store.skipSystemMessages && SYSTEM_MESSAGE_TYPES.has(message.type)) {
             debugLog(
                 `Message ${message.id} ignored: system message (type: ${message.type})`
             );
@@ -205,31 +235,67 @@ function canDeleteMessage(message: Message, currentUserId: string): boolean {
     }
 }
 
-// Function to delete a message
+// Discord silently caps a message page at 50 no matter what `limit` asks for, so asking for
+// more makes the "short page means we reached the end" check fire on a full page.
+const PAGE_LIMIT_MAX = 50;
+const FETCH_ATTEMPTS = 3;
+
+function pageLimit(): number {
+    return Math.min(settings.store.batchSize, PAGE_LIMIT_MAX);
+}
+
+interface RestError {
+    status?: number;
+    message?: string;
+    retry_after?: number;
+    retryAfter?: number;
+}
+
+function asRestError(error: unknown): RestError {
+    return typeof error === "object" && error !== null ? (error as RestError) : {};
+}
+
+function errorStatus(error: unknown): number | undefined {
+    return asRestError(error).status;
+}
+
+function errorText(error: unknown): string {
+    return asRestError(error).message ?? String(error);
+}
+
+// Discord tells us how long it wants us to wait in the error body. Retrying after
+// delayBetweenDeletes instead is what makes a rate limited message get written off as failed
+// while it is still sitting there in the channel.
+function retryDelayFor(error: unknown, fallback: number): number {
+    const { retry_after: snake, retryAfter: camel } = asRestError(error);
+    const seconds = snake ?? camel;
+    return typeof seconds === "number" && seconds > 0 ? seconds * 1000 : fallback;
+}
+
+// Function to delete a message. Resolves to true on success, or to the thrown error on failure
+// so the caller can read the retry delay out of it.
 async function deleteMessage(
     channelId: string,
     messageId: string
-): Promise<boolean> {
+): Promise<unknown> {
     try {
         debugLog(
             `Attempting to delete message ${messageId} in channel ${channelId}`
         );
 
-        const response = await RestAPI.del({
+        await RestAPI.del({
             url: `/channels/${channelId}/messages/${messageId}`,
         });
 
         debugLog(`✅ Message ${messageId} deleted successfully`);
         return true;
-    } catch (error: any) {
-        const errorMessage = error?.message || error?.toString() || "Unknown error";
-        const statusCode = error?.status || error?.statusCode || "N/A";
+    } catch (error) {
+        const statusCode = errorStatus(error) ?? "N/A";
 
         debugLog(
-            `❌ Error deleting message ${messageId}: ${errorMessage} (Status: ${statusCode})`
+            `❌ Error deleting message ${messageId}: ${errorText(error)} (Status: ${statusCode})`
         );
 
-        // Log specific errors
         if (statusCode === 403) {
             debugLog(`❌ Permission denied to delete message ${messageId}`);
         } else if (statusCode === 404) {
@@ -238,52 +304,137 @@ async function deleteMessage(
             debugLog("❌ Rate limit reached for deletion");
         }
 
-        return false;
+        return error;
     }
 }
 
-// Function to get messages from a channel
+/**
+ * Confirm whether a message is really still present.
+ *
+ * A delete can fail for reasons that have nothing to do with the message surviving: the
+ * response can be lost, the connection can drop, or Discord can 429 after applying the
+ * delete. Retrying blindly in that case double-deletes (harmless but wasteful) and, worse,
+ * reporting a successful delete as a failure makes the stats wrong. Discord answers 404 for
+ * a message that no longer exists, so that is the authoritative answer.
+ *
+ * Any other failure is treated as inconclusive - i.e. still present - because guessing
+ * "deleted" would silently hide a real failure.
+ */
+async function isMessageGone(channelId: string, messageId: string): Promise<boolean> {
+    try {
+        await RestAPI.get({ url: `/channels/${channelId}/messages/${messageId}` });
+        return false;
+    } catch (error) {
+        return errorStatus(error) === 404;
+    }
+}
+
+type DeleteOutcome = "deleted" | "gone" | "failed";
+
+/**
+ * Delete one message, retrying while it is genuinely still there.
+ *
+ * A retry waits for whatever Discord asked for (`retry_after`) and falls back to
+ * `delayBetweenDeletes`, so a burst of failures cannot turn into a burst of requests and a
+ * rate limited message gets the time it needs instead of being written off. `isCancelled` is
+ * checked before and after every await so Stop stays responsive during a retry sequence.
+ */
+async function deleteMessageWithRetry(
+    channelId: string,
+    messageId: string,
+    isCancelled: () => boolean
+): Promise<DeleteOutcome> {
+    const maxRetries = settings.store.deleteRetries;
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        if (isCancelled()) return "failed";
+
+        if (attempt > 0) {
+            const wait = retryDelayFor(lastError, settings.store.delayBetweenDeletes);
+            debugLog(
+                `Retrying delete for ${messageId} in ${wait}ms (attempt ${attempt}/${maxRetries})`
+            );
+            await waitCleaningDelay(wait);
+            if (isCancelled()) return "failed";
+        }
+
+        lastError = await deleteMessage(channelId, messageId);
+        if (lastError === true) return "deleted";
+        if (isCancelled()) return "failed";
+
+        if (settings.store.verifyAfterFailure && await isMessageGone(channelId, messageId)) {
+            debugLog(`Message ${messageId} is gone despite the error; counting as deleted`);
+            return "gone";
+        }
+    }
+
+    log(
+        `❌ Gave up on ${messageId} after ${maxRetries + 1} attempt(s): ` +
+        `${errorText(lastError)} (Status: ${errorStatus(lastError) ?? "N/A"})`,
+        "warn"
+    );
+    return "failed";
+}
+
+/**
+ * Fetch one page of messages, newest first.
+ *
+ * An empty array means Discord has no more history. `null` means the page could not be
+ * fetched, i.e. "unknown" - the caller has to retry the same cursor instead of treating the
+ * channel as exhausted, otherwise a single dropped request ends the whole run and everything
+ * below that point stays in the channel.
+ */
 async function getChannelMessages(
     channelId: string,
     before?: string
-): Promise<Message[]> {
-    try {
-        const url = before
-            ? `/channels/${channelId}/messages?limit=${settings.store.batchSize}&before=${before}`
-            : `/channels/${channelId}/messages?limit=${settings.store.batchSize}`;
+): Promise<Message[] | null> {
+    const limit = pageLimit();
+    const url = `/channels/${channelId}/messages?limit=${limit}${before ? `&before=${before}` : ""}`;
+    let lastError: unknown = null;
 
-        debugLog(`Retrieving messages from: ${url}`);
-
-        const response = await RestAPI.get({ url });
-
-        if (!response || !response.body) {
-            debugLog(`Empty or invalid response for ${url}`);
-            return [];
+    for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+            const wait = retryDelayFor(lastError, settings.store.delayBetweenDeletes);
+            log(
+                `⚠️ Could not fetch page ${before ?? "newest"}: ${errorText(lastError)}, retrying in ${wait}ms`,
+                "warn"
+            );
+            await waitCleaningDelay(wait);
+            if (shouldStopCleaning) break;
         }
 
-        const messages = Array.isArray(response.body) ? response.body : [];
-        debugLog(`Retrieved ${messages.length} messages from channel ${channelId}`);
+        try {
+            debugLog(`Retrieving messages from: ${url}`);
+            const response = await RestAPI.get({ url });
 
-        return messages;
-    } catch (error: any) {
-        const errorMessage = error?.message || error?.toString() || "Unknown error";
-        const statusCode = error?.status || error?.statusCode || "N/A";
+            if (!response || !Array.isArray(response.body)) {
+                debugLog(`Empty or invalid response for ${url}`);
+                return [];
+            }
 
-        log(
-            `❌ Error retrieving messages: ${errorMessage} (Status: ${statusCode})`,
-            "error"
-        );
-
-        if (statusCode === 403) {
-            log(`❌ Permission denied to access channel ${channelId}`, "error");
-        } else if (statusCode === 404) {
-            log(`❌ Channel ${channelId} not found`, "error");
-        } else if (statusCode === 429) {
-            log("❌ Rate limit reached for retrieving messages", "error");
+            debugLog(`Retrieved ${response.body.length} messages from channel ${channelId}`);
+            return response.body;
+        } catch (error) {
+            lastError = error;
         }
-
-        return [];
     }
+
+    const statusCode = errorStatus(lastError) ?? "N/A";
+    log(
+        `❌ Error retrieving messages: ${errorText(lastError)} (Status: ${statusCode})`,
+        "error"
+    );
+
+    if (statusCode === 403) {
+        log(`❌ Permission denied to access channel ${channelId}`, "error");
+    } else if (statusCode === 404) {
+        log(`❌ Channel ${channelId} not found`, "error");
+    } else if (statusCode === 429) {
+        log("❌ Rate limit reached for retrieving messages", "error");
+    }
+
+    return null;
 }
 
 // Function to display progress
@@ -322,7 +473,7 @@ function updateProgress() {
 // Main cleaning function
 async function cleanChannel(channelId: string) {
     const generation = cleaningGeneration;
-    if (!settings.store.enabled) {
+    if (!settings.store.isEnabled) {
         log("Plugin disabled", "warn");
         return;
     }
@@ -361,9 +512,14 @@ async function cleanChannel(channelId: string) {
                 .join(", ") ||
             "Private channel";
 
+        // Reset the stop flag up front. A run started right after a stopped one otherwise sees
+        // the stale true and every wait resolves instantly / every fetch bails immediately.
+        shouldStopCleaning = false;
+
         // Initial estimation of message count
         log(`🔍 Analyzing channel "${channelName}"...`);
         let estimatedTotal = 0;
+        let estimateReachedEnd = false;
         let lastMessageId: string | undefined;
 
         showNotification({
@@ -377,7 +533,15 @@ async function cleanChannel(channelId: string) {
             // Maximum 10 batches for estimation
             const messages = await getChannelMessages(channelId, lastMessageId);
             if (generation !== cleaningGeneration || shouldStopCleaning) return;
-            if (messages.length === 0) break;
+            if (messages === null) {
+                // The fetch failed, so how much history exists is unknown. Leave
+                // estimateReachedEnd false and let the real walk find out.
+                break;
+            }
+            if (messages.length === 0) {
+                estimateReachedEnd = true;
+                break;
+            }
 
             const validMessages = messages.filter(msg =>
                 canDeleteMessage(msg, currentUserId)
@@ -385,10 +549,18 @@ async function cleanChannel(channelId: string) {
             estimatedTotal += validMessages.length;
             lastMessageId = messages[messages.length - 1].id;
 
-            if (messages.length < settings.store.batchSize) break;
+            if (messages.length < pageLimit()) {
+                estimateReachedEnd = true;
+                break;
+            }
         }
 
-        if (estimatedTotal === 0) {
+        // Only bail out when the estimate actually walked the whole channel. The estimate is
+        // capped at 10 pages, so hitting that cap with a count of zero only means "nothing in
+        // the newest 500 messages", not "nothing to delete" - and `onlyOwnMessages` makes that
+        // the common case in a busy channel. Treating it as empty is what made the plugin
+        // report nothing to do and leave the rest of the history untouched.
+        if (estimatedTotal === 0 && estimateReachedEnd) {
             log("No messages to delete found", "warn");
             showNotification({
                 title: "ℹ️ MessageCleaner",
@@ -405,7 +577,6 @@ async function cleanChannel(channelId: string) {
 
         // Initialize statistics
         isCleaningInProgress = true;
-        shouldStopCleaning = false;
         cleaningStats = {
             total: estimatedTotal,
             deleted: 0,
@@ -426,12 +597,30 @@ async function cleanChannel(channelId: string) {
 
         lastMessageId = undefined;
         let totalProcessed = 0;
+        let consecutivePageFailures = 0;
 
-        // Main cleaning loop
+        // Main cleaning loop.
+        //
+        // Ending the walk on a short page is not safe: Discord caps pages at 50 and can hand
+        // back fewer than the limit while history remains, so a short page does not mean the
+        // channel is drained. Only an empty page does.
         while (!shouldStopCleaning) {
             try {
                 const messages = await getChannelMessages(channelId, lastMessageId);
                 if (generation !== cleaningGeneration || shouldStopCleaning) break;
+
+                if (messages === null) {
+                    // The cursor has not moved, so the next iteration refetches the same page.
+                    if (++consecutivePageFailures >= FETCH_ATTEMPTS) {
+                        log(
+                            `Giving up after ${FETCH_ATTEMPTS} consecutive page failures`,
+                            "error"
+                        );
+                        break;
+                    }
+                    continue;
+                }
+                consecutivePageFailures = 0;
 
                 if (messages.length === 0) {
                     log("No more messages to process");
@@ -443,17 +632,14 @@ async function cleanChannel(channelId: string) {
                 const validMessages = messages.filter(msg =>
                     canDeleteMessage(msg, currentUserId)
                 );
+                cleaningStats.skipped += messages.length - validMessages.length;
                 debugLog(
-                    `${validMessages.length} valid messages out of ${messages.length}`
+                    `${validMessages.length} deletable messages out of ${messages.length}`
                 );
 
-                if (validMessages.length === 0) {
-                    // If no valid messages in this batch, move to next
-                    lastMessageId = messages[messages.length - 1].id;
-                    cleaningStats.skipped += messages.length;
-                    debugLog("No valid messages in this batch, moving to next");
-                    continue;
-                }
+                // Advance before deleting so an unexpected throw part way through a page
+                // cannot replay the page we already worked through.
+                lastMessageId = messages[messages.length - 1].id;
 
                 // Delete messages one by one
                 for (const message of validMessages) {
@@ -462,15 +648,23 @@ async function cleanChannel(channelId: string) {
                         break;
                     }
 
-                    const success = await deleteMessage(channelId, message.id);
+                    const outcome = await deleteMessageWithRetry(
+                        channelId,
+                        message.id,
+                        () => shouldStopCleaning || generation !== cleaningGeneration
+                    );
                     if (generation !== cleaningGeneration || shouldStopCleaning) break;
 
-                    if (success) {
-                        cleaningStats.deleted++;
-                        debugLog(`✅ Message ${message.id} deleted`);
-                    } else {
+                    if (outcome === "failed") {
                         cleaningStats.failed++;
                         debugLog(`❌ Failed to delete message ${message.id}`);
+                    } else {
+                        cleaningStats.deleted++;
+                        debugLog(
+                            outcome === "gone"
+                                ? `✅ Message ${message.id} was already gone`
+                                : `✅ Message ${message.id} deleted`
+                        );
                     }
 
                     totalProcessed++;
@@ -486,48 +680,15 @@ async function cleanChannel(channelId: string) {
                         updateProgress();
                     }
                 }
-
-                // Invalid messages counted as skipped
-                const invalidMessages = messages.filter(
-                    msg => !canDeleteMessage(msg, currentUserId)
-                );
-                cleaningStats.skipped += invalidMessages.length;
-
-                lastMessageId = messages[messages.length - 1].id;
-
-                // If we processed fewer messages than batch size, we're done
-                if (messages.length < settings.store.batchSize) {
-                    debugLog(
-                        `Incomplete batch (${messages.length}/${settings.store.batchSize}), ending processing`
-                    );
-                    break;
-                }
-            } catch (error: any) {
-                const errorMessage =
-                    error?.message || error?.toString() || "Unknown error";
-                const statusCode = error?.status || error?.statusCode || "N/A";
-
+            } catch (error) {
                 log(
-                    `❌ Error in cleaning loop: ${errorMessage} (Status: ${statusCode})`,
+                    `❌ Unexpected error while cleaning: ${errorText(error)} (Status: ${errorStatus(error) ?? "N/A"})`,
                     "error"
                 );
-                cleaningStats.failed++;
 
-                // Specific handling for rate limiting errors
-                if (statusCode === 429) {
-                    log("Rate limit reached, extended pause...", "warn");
-                    await waitCleaningDelay(30000); // 30 seconds
-                } else {
-                    // Wait a bit before continuing on normal error
-                    await waitCleaningDelay(5000); // 5 seconds
-                }
+                if (++consecutivePageFailures >= FETCH_ATTEMPTS) break;
+                await waitCleaningDelay(settings.store.delayBetweenDeletes);
                 if (generation !== cleaningGeneration || shouldStopCleaning) break;
-
-                // If too many consecutive errors, stop
-                if (cleaningStats.failed > 15) {
-                    log("Too many consecutive errors, stopping cleaning", "error");
-                    break;
-                }
             }
         }
 

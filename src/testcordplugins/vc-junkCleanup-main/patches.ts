@@ -24,8 +24,8 @@ const Patches: Record<string, ConfigurablePatchDefinition> = {
         patches: {
             find: '"sticker")',
             replacement: {
-                match: /=\i\.gifts?/g,
-                replace: "=null"
+                match: /\i\.gifts\?\.button!=null/,
+                replace: "false"
             }
         }
     },
@@ -72,10 +72,6 @@ const Patches: Record<string, ConfigurablePatchDefinition> = {
                 find: "#{intl::PRIVATE_CHANNELS_A11Y_LABEL}",
                 replacement: [
                     {
-                        match: /\i\?\(0,\i\.\i\)\(.{0,250}?\},"premium"\):null,/,
-                        replace: ""
-                    },
-                    {
                         match: /\(0,\i\.\i\)\(.{0,250}?\},"discord-shop"\),/,
                         replace: ""
                     },
@@ -89,8 +85,8 @@ const Patches: Record<string, ConfigurablePatchDefinition> = {
         patches: {
             find: "COLLECTIBLES_PROFILE_SETTINGS_UPSELL,",
             replacement: {
-                match: /COLLECTIBLES_PROFILE_SETTINGS_UPSELL\).{0,150}?return /,
-                replace: "$&null;"
+                match: /(let \i=function\(\)\{)(?=[^;]{0,100}COLLECTIBLES_PROFILE_SETTINGS_UPSELL)/,
+                replace: "$1return null;"
             }
         }
     },
@@ -282,8 +278,8 @@ const Patches: Record<string, ConfigurablePatchDefinition> = {
         patches: {
             find: "Not rendered due to asset error",
             replacement: {
-                match: /(?<=return).{0,50}?\.QUESTS_BAR,questId/,
-                replace: " null;$&"
+                match: /let \i=\d+\+\d+\*!!\i;return\(0,\i\.jsx\)\(\i\.\i,\{questOrQuests:/,
+                replace: "return null;$&"
             }
         }
     },
@@ -291,10 +287,10 @@ const Patches: Record<string, ConfigurablePatchDefinition> = {
     questsActiveNow: {
         description: "Hide the Quest promotions in the Active Now sidebar",
         patches: {
-            find: "NOW_PLAYING_CARD_HOVERED,{",
+            find: '"QuestActivityPanelItem"',
             replacement: {
-                match: /(quest:)\i}\)/,
-                replace: "$1null})"
+                match: /(let\{party:\i,onUserContextMenu:\i,onChannelContextMenu:\i,quest:)(\i)(,hasStaffQuestActivityPanelOverride:\i\}=\i,)/,
+                replace: "$1_unusedQuest$3$2=null,"
             }
         }
     },

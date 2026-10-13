@@ -39,15 +39,17 @@ export default definePlugin({
     patches: [
         {
             find: "#{intl::xdCLeM::raw}",
+            noWarn: true,
             replacement: [
                 {
-                    match: /profile:\i\}\),.{0,20}profile:\i(?=.{0,20}profile:\i)/,
+                    match: /profile:\i,disableGuildNameClick:!\i/,
                     replace: "$&,invite:arguments[0].invite"
                 }
             ]
         },
         {
             find: "isBannerVisible:!1})},",
+            noWarn: true,
             replacement: [
                 {
                     match: /children:(\i)\.name\}\)\}\)\}\)/,

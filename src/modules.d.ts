@@ -17,13 +17,17 @@
 */
 
 declare module "~plugins" {
+    import { PluginTarget } from "@utils/pluginTargets";
     const plugins: Record<string, import("./utils/types").Plugin>;
+
     export default plugins;
     export const PluginMeta: Record<string, {
         folderName: string;
         userPlugin: boolean;
+        id?: string;
+        aliases?: string[];
     }>;
-    export const ExcludedPlugins: Record<string, "web" | "discordDesktop" | "vesktop" | "equibop" | "desktop" | "dev">;
+    export const ExcludedPlugins: Record<string, PluginTarget>;
 }
 
 declare module "~bdplugins" {
@@ -38,12 +42,21 @@ declare module "~git-hash" {
     const hash: string;
     export default hash;
 }
+declare module "~git-branch" {
+    const branch: string;
+    export default branch;
+}
 declare module "~git-remote" {
     const remote: string;
     export default remote;
 }
 
 declare module "file://*" {
+    const content: string;
+    export default content;
+}
+
+declare module "*.html" {
     const content: string;
     export default content;
 }

@@ -20,7 +20,6 @@ import { AudioProcessor } from "@api/AudioPlayer";
 import type { ProfileBadge } from "@api/Badges";
 import type { ChatBarButtonData, ChatBarButtonWrapperData } from "@api/ChatButtons";
 import type { NavContextMenuPatchCallback } from "@api/ContextMenu";
-import type { GifPickerContextMenuItemFactory } from "@api/GifPickerContextMenu";
 import { HeaderBarButtonData } from "@api/HeaderBar";
 import type { MemberListDecoratorFactory } from "@api/MemberListDecorators";
 import type { MessageAccessoryFactory } from "@api/MessageAccessories";
@@ -37,6 +36,10 @@ import type { LiteralUnion } from "type-fest";
 
 // exists to export default definePlugin({...})
 export default function definePlugin<P extends PluginDef>(p: P & Record<PropertyKey, any>) {
+    if (p.settings) {
+        const canonical = (p as any).id ?? p.name;
+        p.settings.pluginName = canonical;
+    }
     return p as typeof p & Plugin;
 }
 
@@ -75,7 +78,10 @@ export const PluginTags = [
     "Nightcord",
     "betterdiscord",
     "bd",
-    "loader"
+    "loader",
+    "experimental",
+    "legacy",
+    "Testcord Modified"
 ] as const;
 
 export type PluginTag = typeof PluginTags[number];
@@ -137,11 +143,22 @@ export interface Plugin extends PluginDef {
 export type IconComponent = (props: IconProps & Record<string, any>) => ReactNode;
 export type IconProps = { height?: number | string; width?: number | string; className?: string; };
 export interface PluginDef {
+    /**
+     * Stable unique identifier for this plugin. Changing `name` will no longer
+     * disable the plugin as long as `id` stays the same. If omitted, `name`
+     * is used as the id for backwards compatibility.
+     * Must be lower-cased, `kebab` or `camel`, and never change after first release.
+     */
+    id?: string;
     name: string;
     description: string;
     /** Additional search terms that will bring up your plugin */
     searchTerms?: string[];
     tags?: PluginTag[];
+    /** Whether this plugin is experimental */
+    experimental?: boolean;
+    /** Whether this plugin is legacy/deprecated */
+    legacy?: boolean;
     authors: PluginAuthor[];
     start?(): void;
     stop?(): void;
@@ -244,12 +261,19 @@ export interface PluginDef {
     renderProfileCollection?: ProfileCollectionData;
     chatBarButtonWrapper?: ChatBarButtonWrapperData;
     renderProfileSection?: ProfileSectionData;
-    gifPickerContextMenu?: GifPickerContextMenuItemFactory;
 
     /**
      * A Vencord plugin that is modified for extra features in Equicord
      */
     isModified?: boolean;
+    testcordModified?: boolean;
+
+    /**
+     * Previous names/ids this plugin was known by. Used by the stable-ID
+     * migration to move `Settings.plugins[oldId]` → `Settings.plugins[id]` so
+     * a rename never orphans the user's enabled flag or per-plugin settings.
+     */
+    aliases?: string[];
 }
 
 export const enum StartAt {
@@ -459,3 +483,9 @@ export type PluginNative<PluginExports extends Record<string, (event: Electron.I
 };
 
 export type AllOrNothing<T> = T | { [K in keyof T]?: never; };
+
+export type ConstEnumToRuntimeEnum<T> = {
+    [K in keyof T as T[K] extends number ? T[K] : never]: K;
+} & {
+    [K in keyof T]: T[K];
+};

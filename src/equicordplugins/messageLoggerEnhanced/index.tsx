@@ -14,7 +14,7 @@ import { classNameFactory } from "@utils/css";
 import { Logger } from "@utils/Logger";
 import definePlugin from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { FluxDispatcher, MessageStore, SelectedChannelStore, UserStore } from "@webpack/common";
+import { FluxDispatcher, MessageActions, MessageStore, SelectedChannelStore, UserStore } from "@webpack/common";
 
 import { OpenLogsButton } from "./components/LogsButton";
 import { openLogModal } from "./components/LogsModal";
@@ -42,11 +42,12 @@ const processedPayloads = new WeakSet<any>();
 // them, so they grew for every logged message the client rendered. Same cap, same setting.
 const mergedMessageCache = new LimitedMap<string, LoggedMessageJSON>();
 const mergedEditTimestamps = new LimitedMap<string, number>();
+const lastChannelFetch = new Map<string, number>();
 
 const cacheThing = findByPropsLazy("commit", "getOrCreate");
 
-export async function clearLogs(showToast = true) {
-    await idb.clearMessagesIDB(showToast);
+export async function clearLogs(toast = true) {
+    await idb.clearMessagesIDB(toast);
     cacheSentMessages.clear();
 }
 
@@ -61,12 +62,7 @@ let oldGetMessage: typeof MessageStore.getMessage;
 
 const handledMessageIds = new Set();
 async function messageDeleteHandler(payload: MessageDeletePayload & { isBulk: boolean; }) {
-    if (payload.mlDeleted) {
-        if (settings.store.permanentlyRemoveLogByDefault)
-            await idb.deleteMessageIDB(payload.id);
-
-        return;
-    }
+    if (payload.mlDeleted) return;
 
     if (handledMessageIds.has(payload.id)) {
         return;
@@ -190,15 +186,28 @@ async function messageUpdateHandler(payload: MessageUpdatePayload) {
     await addMessage(message, idb.DBMessageStatus.EDITED, currentChannelId);
 }
 
+let whitelistCacheRaw: string | undefined;
+let whitelistSetCache = new Set<string>();
+
+function getWhitelistSet(): Set<string> {
+    const raw = settings.store.whitelistedIds;
+    if (raw !== whitelistCacheRaw) {
+        whitelistCacheRaw = raw;
+        whitelistSetCache = new Set((raw ?? "").split(",").map(s => s.trim()).filter(Boolean));
+    }
+    return whitelistSetCache;
+}
+
 function messageCreateHandler(payload: MessageCreatePayload) {
+    const { message } = payload ?? {};
+    if (!message?.id || !message?.channel_id) return;
+
     if (!settings.store.cacheMessagesFromServers && payload.guildId != null) {
-        const ids = [payload.channelId, payload.message?.author?.id, payload.guildId];
-        const { whitelistedIds } = settings.store;
-        const isWhitelisted = !whitelistedIds ? false : whitelistedIds.split(",").some(e => ids.includes(e));
-        if (!isWhitelisted) return;
+        const set = getWhitelistSet();
+        if (set.size === 0) return;
+        if (!set.has(payload.channelId) && !set.has(message.author?.id) && !set.has(payload.guildId)) return;
     }
 
-    const { message } = payload;
     cacheSentMessages.set(`${message.channel_id},${message.id}`, cleanUpCachedMessage(message));
 }
 
@@ -268,9 +277,10 @@ async function processMessageFetch(response: FetchMessagesResponse) {
 export default definePlugin({
     name: "MessageLoggerEnhanced",
     authors: [Devs.Aria, EquicordDevs.keircn, TestcordDevs.SirPhantom89],
-    description: "Improves MessageLogger with edited message history, ghost ping detection and more",
-    tags: ["Chat", "Servers"],
-    dependencies: ["MessageLogger", "HeaderBarAPI"],
+    description: "Improves Message Logger with edited message history, ghost ping detection and more",
+    tags: ["Chat", "Servers", "Testcord Modified"],
+    testcordModified: true,
+    dependencies: ["MessageLogger", "HeaderBarAPI", "ContextMenuAPI"],
 
     patches: [
         {
@@ -292,14 +302,6 @@ export default definePlugin({
             replacement: {
                 match: /deleted:\i\.deleted, editHistory:\i\.editHistory,/,
                 replace: "deleted:$self.getDeleted(...arguments), editHistory:$self.getEdited(...arguments),"
-            }
-        },
-        // MessagePreview component in LogsModal
-        {
-            find: "=!0,disableInteraction:",
-            replacement: {
-                match: /childrenHeader:.{0,100}childrenMessageContent/,
-                replace: "childrenAccessories:arguments[0].childrenAccessories || null,$&"
             }
         },
         // fix vidoes failing because there are no thumbnails
@@ -324,7 +326,7 @@ export default definePlugin({
 
         // only check for expired attachments if the message is not deleted
         {
-            find: "\"/ephemeral-attachments/\"",
+            find: ".ATTACHMENTS_REFRESH_URLS,",
             replacement: {
                 match: /\i\.attachments\.some\(\i\)\|\|\i\.embeds\.some/,
                 replace: "!arguments[0].deleted && $&"
@@ -358,22 +360,32 @@ export default definePlugin({
 
     coolReAddDeletedMessages: (messages: any[] & { extra?: any[]; }, payload: LoadMessagePayload) => {
         try {
-            console.log("[MessageLoggerEnhanced] coolReAddDeletedMessages called. messages:", messages, "payload:", payload);
             if (!Array.isArray(messages)) return messages;
 
-            const validMessages = messages.filter(m => m && typeof m === "object");
+            const validMessages = messages.filter(m => m && typeof m === "object" && typeof m.id === "string");
             if (validMessages.length !== messages.length) {
-                console.log("[MessageLoggerEnhanced] Filtering non-object messages. Before:", messages.length, "After:", validMessages.length);
                 messages.length = 0;
                 messages.push(...validMessages);
             }
 
-            if (messages.extra)
-                reAddDeletedMessages(messages, messages.extra, !payload.hasMoreAfter && !payload.isBefore, !payload.hasMoreBefore && !payload.isAfter);
+            if (Array.isArray(messages.extra)) {
+                const validExtra = (messages.extra as any[]).filter(m => m && typeof m === "object" && typeof m.id === "string");
+                if (validExtra.length !== (messages.extra as any[]).length) {
+                    (messages as any).extra = validExtra;
+                }
+                if (validExtra.length)
+                    reAddDeletedMessages(messages, validExtra, !payload.hasMoreAfter && !payload.isBefore, !payload.hasMoreBefore && !payload.isAfter);
+            }
 
             for (const msg of messages) {
                 if (msg && typeof msg === "object" && Array.isArray(msg.mentions)) {
                     msg.mentions = msg.mentions.filter(m => m && typeof m === "object");
+                }
+                // Guard against Discord's `flags in message` check where message might be a primitive due to corruption
+                if (msg && typeof msg === "object" && msg.flags != null && typeof msg.flags !== "number" && typeof msg.flags !== "bigint") {
+                    // Coerce or drop invalid flags
+                    const parsed = Number(msg.flags);
+                    msg.flags = Number.isFinite(parsed) ? parsed : 0;
                 }
             }
         }
@@ -400,17 +412,37 @@ export default definePlugin({
     },
 
     getEdited(m1, m2) {
-        const editHistory = m2?.editHistory;
-        if (editHistory == null && m1?.editHistory != null && m1.editHistory.length > 0)
-            return m1.editHistory.map(mapTimestamp);
-        return editHistory;
+        return m2?.editHistory ?? m1?.editHistory?.map(mapTimestamp) ?? [];
     },
 
     flux: {
         "MESSAGE_DELETE": messageDeleteHandler as any,
         "MESSAGE_DELETE_BULK": messageDeleteBulkHandler,
         "MESSAGE_UPDATE": messageUpdateHandler,
-        "MESSAGE_CREATE": messageCreateHandler
+        "MESSAGE_CREATE": messageCreateHandler,
+        "CHANNEL_SELECT": (payload: { channelId?: string }) => {
+            const { channelId } = payload;
+            if (channelId == null) return;
+            const collection = MessageStore.getMessages(channelId);
+            if (!collection?.hasFetched) return;
+
+            // Throttle: at most one refetch per channel per 30s, and only if we actually have
+            // deleted/edited logs for that channel (avoid spamming API on every tab switch).
+            const now = Date.now();
+            const last = lastChannelFetch.get(channelId) ?? 0;
+            if (now - last < 30_000) return;
+            // only fetch if cache has any logged msg for channel
+            let hasLogged = false;
+            try {
+                for (const v of idb.cachedMessages.values()) {
+                    if ((v as any).channel_id === channelId && ((v as any).deleted || (v as any).editHistory?.length)) { hasLogged = true; break; }
+                }
+            } catch { hasLogged = true; }
+            if (!hasLogged) return;
+            lastChannelFetch.set(channelId, now);
+
+            MessageActions.fetchMessages({ channelId, limit: 50 });
+        },
     },
 
     async start() {

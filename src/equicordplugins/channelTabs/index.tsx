@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import "./style.css";
-
 import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
+import { disableStyle, enableStyle } from "@api/Styles";
 import ErrorBoundary from "@components/ErrorBoundary";
+import { LinkIcon } from "@components/Icons";
 import { Devs, EquicordDevs } from "@utils/constants";
 import definePlugin from "@utils/types";
 import { Channel, Message } from "@vencord/discord-types";
@@ -15,8 +15,10 @@ import { ChannelStore, Menu } from "@webpack/common";
 import { JSX } from "react";
 
 import ChannelsTabsContainer from "./components/ChannelTabsContainer";
+import style from "./style.css?managed";
 import * as ChannelTabsUtils from "./util";
 import { BasicChannelTabsProps, createTab, handleChannelSwitch, settings } from "./util";
+import { clearTabState, useScrollManager } from "./util/scroll";
 
 const contextMenuPatch: NavContextMenuPatchCallback = (children, props: { channel: Channel, messageId?: string; }) => {
     const { channel, messageId } = props;
@@ -25,6 +27,8 @@ const contextMenuPatch: NavContextMenuPatchCallback = (children, props: { channe
         <Menu.MenuItem
             label="Open in New Tab"
             id="open-link-in-tab"
+            icon={LinkIcon}
+            leadingAccessory={{ type: "icon", icon: LinkIcon }}
             action={() => createTab({
                 guildId: channel.guild_id || "@me", // Normalize for DMs/Group Chats
                 channelId: channel.id
@@ -47,7 +51,7 @@ const contextMenuPatch: NavContextMenuPatchCallback = (children, props: { channe
 export default definePlugin({
     name: "ChannelTabs",
     description: "Group your commonly visited channels in tabs, like a browser",
-    tags: ["Appearance", "Customisation", "Organisation", "Servers"],
+    tags: ["Appearance", "Customisation", "Organisation", "Servers", "Utility"],
     authors: [Devs.TheSun, Devs.TheKodeToad, EquicordDevs.keifufu, Devs.Nickyux, EquicordDevs.DiabeloDEV, EquicordDevs.justjxke, EquicordDevs.keircn],
     dependencies: ["ContextMenuAPI"],
     contextMenus: {
@@ -62,8 +66,14 @@ export default definePlugin({
             find: '"AppView"',
             replacement: [
                 {
+                    match: /((\i\?\.params)\.guildId===.{0,300}?)"div",{(?=className:\i\.\i,children:\[)/,
+                    replace: "$1$self.render,{currentChannel:$2,",
+                    predicate: () => settings.store.tabBarPosition === "top"
+                },
+                {
                     match: /"div",{(?=.{0,80}(\i\?\.params))/,
                     replace: "$self.render,{currentChannel:$1,",
+                    predicate: () => settings.store.tabBarPosition === "bottom"
                 }
             ]
         },
@@ -91,11 +101,32 @@ export default definePlugin({
                 replace: "$&if ($1.ctrlKey) return $self.open($2);"
             }
         },
+        {
+            find: "#{intl::CHANNEL_CHAT_HEADING}",
+            replacement: {
+                match: /hideSummaries:(\i)===(\i\.\i)\.OVERLAY/,
+                replace: "$&,vcChannelTabsMain:$1===$2.NORMAL"
+            }
+        },
+        {
+            find: "#{intl::CHANNEL_MESSAGES_A11Y_LABEL}",
+            replacement: {
+                match: /onScroll:(\i)\.handleScroll(?=,onMouseDown:\i\.handleMouseDown)/,
+                replace: "onScroll:$self.useScrollManager($1,arguments[0].vcChannelTabsMain).handleScroll"
+            }
+        }
     ],
 
     settings,
+    useScrollManager,
+
+    stop() {
+        disableStyle(style);
+        clearTabState();
+    },
 
     start() {
+        enableStyle(style);
         // migrate old settings to new granular keybind settings
         const store = settings.store as any;
         if (store.enableHotkeys !== undefined) {

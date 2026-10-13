@@ -18,12 +18,16 @@
 
 import { disableStyle, enableStyle, setStyleClassNames } from "@api/Styles";
 import { Devs } from "@utils/constants";
+import { Logger } from "@utils/Logger";
 import definePlugin from "@utils/types";
 import { findCssClassesLazy } from "@webpack";
 
 import style from "./messagePopover.css?managed";
 
-const messageClasses = findCssClassesLazy("messageListItem", "message");
+// Looked up separately: findCssClasses requires every name to live in the same module,
+// so asking for both at once returns nothing whenever Discord splits them.
+const messageListItemClasses = findCssClassesLazy("messageListItem");
+const messageClasses = findCssClassesLazy("message");
 
 export default definePlugin({
     name: "MessagePopoverAPI",
@@ -31,10 +35,16 @@ export default definePlugin({
     authors: [Devs.KingFish, Devs.Ven, Devs.Nuckyz],
 
     start() {
-        setStyleClassNames(style, {
-            messageListItem: messageClasses.messageListItem,
-            message: messageClasses.message
-        });
+        try {
+            const mli = (messageListItemClasses as any)?.messageListItem ?? "messageListItem";
+            const msg = (messageClasses as any)?.message ?? "message";
+            setStyleClassNames(style, {
+                messageListItem: mli,
+                message: msg
+            });
+        } catch (e) {
+            new Logger("MessagePopoverAPI").warn("Failed to resolve message classes:", e);
+        }
         enableStyle(style);
     },
 
@@ -44,14 +54,30 @@ export default definePlugin({
 
     patches: [
         {
-            find: "#{intl::MESSAGE_UTILITIES_A11Y_LABEL}",
+            find: "#{intl::MESSAGE_UTILITIES_A11Y_LABEL}),children",
             replacement: [
-                // Primary: Canary build pattern
-                // Matches the react button with togglePopout inside a Fragment wrapper
                 {
-                    match: /(?<=\]\}\)),(.{0,40}togglePopout:.+?\}\))\]\}\):null,(?<=\((\i),\{label:.+?:null,(\i)\?\(0,\i\.jsxs?\)\(\i\.Fragment.+?message:(\i).+?)/,
+                    noWarn: true,
+                    match: /(?<=\]\}\)),(.{0,40}togglePopout:.{0,120}?\}\))\]\}\):null,(?<=\((\i),\{label:.{0,80}?:null,(\i)\?\(0,\i\.jsxs?\)\(\i\.Fragment.{0,200}?message:(\i).{0,200}?)/,
                     replace: (_, ReactButton, ButtonComponent, showReactButton, message) => "" +
-                        `]}):null,Vencord.Api.MessagePopover._buildPopoverElements(Vencord.Api.MessagePopover._captureToolbarButton(${ButtonComponent}),${message}),${showReactButton}?${ReactButton}:null,`
+                        `]}):null,Vencord.Api.MessagePopover._buildPopoverElements(${ButtonComponent},${message}),${showReactButton}?${ReactButton}:null,`
+                },
+                // Primary: New Discord Canary - togglePopout and message are in the same
+                // nE component call, followed by a np toolbar button with {label:
+                {
+                    // The button reference is a member expression on current Canary
+                    // (nt.qv), which \i's bare identifier pattern cannot match.
+                    match: /\{togglePopout:\i,.+?message:(\i)\}\)\]\}\):null,(?!Vencord\.Api\.MessagePopover).*?\(?\(0,\i\.jsx\)\(([\w$]+(?:\.[\w$]+)*),\{label:/,
+                    replace: (_, message, buttonComponent) => {
+                        const i = _.indexOf("):null,") + 7;
+                        return _.slice(0, i) + `Vencord.Api.MessagePopover._buildPopoverElements(Vencord.Api.MessagePopover._captureToolbarButton(${buttonComponent}),${message}),` + _.slice(i);
+                    }
+                },
+                // Fallback: New Discord Canary - match togglePopout component, inject without button capture
+                {
+                    noWarn: true,
+                    match: /\{togglePopout:\i,.+?message:(\i)\}\)\]\}\):null,(?!Vencord\.Api\.MessagePopover)/,
+                    replace: "$&Vencord.Api.MessagePopover._buildPopoverElements(null,$1),"
                 },
                 // Fallback 1: PTB/Stable - simpler react button with togglePopout (no Fragment)
                 {
@@ -107,6 +133,20 @@ export default definePlugin({
                     replace: ",Vencord.Api.MessagePopover._buildPopoverElements(null,$2),$1"
                 }
             ]
+        },
+        {
+            find: "#{intl::MESSAGE_UTILITIES_A11Y_LABEL}",
+            replacement: {
+                match: /className:(\i\(\)\(\i\.className,.{0,80}?\)),(onClick:.{0,150}?children:\(0,\i\.jsxs?\)\([\w$]+(?:\.[\w$]+)*,\{className:)(\i\.innerClassName),children:(\[\i,\i\])/,
+                replace: 'className:"vc-message-popover "+$1,$2$3+" vc-message-popover-bar",children:Vencord.Api.MessagePopover._wrapPopoverBar($4)'
+            }
+        },
+        {
+            find: 'role:"article",onMouseEnter',
+            replacement: {
+                match: /(?<=null!=(\i)\?\(0,\i\.jsxs?\)\("div",\{className:)\i\.\i(?=,children:\1\}\))/,
+                replace: '$&+" vc-message-popover-slot"'
+            }
         }
     ]
 });

@@ -12,6 +12,13 @@ export default definePlugin({
     description: "API to add collections to the user profile panel like discords game collection.",
     authors: [Devs.thororen],
     patches: [
+        {
+            find: "n?.widgets!=null&&n.widgets.length>0",
+            replacement: {
+                match: /user:\i,widgets:\i\?\.\i+,onOpenUserProfileModal:\i\}\)/,
+                replace: "$&,Vencord.Api.ProfileCollections.renderProfileCollections(arguments[0])",
+            },
+        },
         // user panel popout — inject after Discord's widgets component
         {
             find: '"UserProfileAccountPopout"',
@@ -22,19 +29,17 @@ export default definePlugin({
         },
         // dm sidebar
         {
-            find: "SIDEBAR,disableToolbar:",
-            replacement: {
-                match: /widgets:\i\.widgets,onOpenUserProfileModal:\i\}\)\}\)(?=,)/,
-                replace: "$&,Vencord.Api.ProfileCollections.renderProfileCollectionsForUser(n.id,true)"
-            }
-        },
-        // user profile popout — message/member list popup
-        {
-            find: '"UserProfilePopout"',
-            replacement: {
-                match: /onOpenUserProfileModal:\i}\)(?=,)/,
-                replace: "$&,Vencord.Api.ProfileCollections.renderProfileCollections({user:i,displayProfile:n,isSideBar:false})"
-            }
+            find: ".SIDEBAR,disableToolbar:",
+            replacement: [
+                {
+                    match: /user:\i,widgets:.{0,100}?\}\),(?=.{0,100}user:\i,currentUser:\i)/,
+                    replace: "$&arguments[0]?.isRedesignEnabled&&Vencord.Api.ProfileCollections.renderProfileCollections({...arguments[0],isSideBar:true}),"
+                },
+                {
+                    match: /user:\i,widgets:.{0,100}?\}\),(?=.{0,100}unownedWishlistItems:\i,wishlistId:\i)/,
+                    replace: "$&!arguments[0]?.isRedesignEnabled&&Vencord.Api.ProfileCollections.renderProfileCollections({...arguments[0],isSideBar:true}),"
+                }
+            ]
         }
     ]
 });

@@ -10,7 +10,8 @@ import { gitHashShort } from "@shared/vencordUserAgent";
 import { copyToClipboard } from "@utils/clipboard";
 import { relaunch, showItemInFolder } from "@utils/native";
 import { checkForUpdates, getRepo } from "@utils/updater";
-import { GuildStore, NavigationRouter, SettingsRouter, Toasts } from "@webpack/common";
+import { ToastPosition } from "@vencord/discord-types/enums";
+import { GuildStore, NavigationRouter, SettingsRouter, showToast } from "@webpack/common";
 
 import gitRemote from "~git-remote";
 import Plugins from "~plugins";
@@ -26,16 +27,16 @@ export interface ButtonAction {
 }
 
 export const actions: ButtonAction[] = [
-    { id: "openEquicordSettings", label: "Open Equicord tab", callback: async () => await SettingsRouter.openUserSettings("equicord_main_panel"), registrar: "Equicord" },
-    { id: "openPluginSettings", label: "Open Plugin tab", callback: () => SettingsRouter.openUserSettings("equicord_plugins_panel"), registrar: "Equicord" },
-    { id: "openThemesSettings", label: "Open Themes tab", callback: () => SettingsRouter.openUserSettings("equicord_themes_panel"), registrar: "Equicord" },
-    { id: "openUpdaterSettings", label: "Open Updater tab", callback: () => SettingsRouter.openUserSettings("equicord_updater_panel"), registrar: "Equicord" },
-    { id: "openEquicordCloudSettings", label: "Open Cloud tab", callback: () => SettingsRouter.openUserSettings("equicord_cloud_panel"), registrar: "Equicord" },
-    { id: "openBackupSettings", label: "Open Backup & Restore tab", callback: () => SettingsRouter.openUserSettings("equicord_backup_restore_panel"), registrar: "Equicord" },
-    { id: "restartClient", label: "Restart Client", callback: () => relaunch(), registrar: "Equicord" },
-    { id: "openQuickCSSFile", label: "Open Quick CSS File", callback: () => VencordNative.quickCss.openEditor(), registrar: "Equicord" },
-    { id: "openSettingsFolder", label: "Open Settings Folder", callback: async () => showItemInFolder(await VencordNative.settings.getSettingsDir()), registrar: "Equicord" },
-    { id: "openInGithub", label: "Open in Github", callback: async () => VencordNative.native.openExternal(await getRepo()), registrar: "Equicord" },
+    { id: "openTestcordSettings", label: "Open Testcord tab", callback: async () => await SettingsRouter.openUserSettings("testcord_main_panel"), registrar: "Testcord" },
+    { id: "openPluginSettings", label: "Open Plugin tab", callback: () => SettingsRouter.openUserSettings("testcord_plugins_panel"), registrar: "Testcord" },
+    { id: "openThemesSettings", label: "Open Themes tab", callback: () => SettingsRouter.openUserSettings("testcord_themes_panel"), registrar: "Testcord" },
+    { id: "openUpdaterSettings", label: "Open Updater tab", callback: () => SettingsRouter.openUserSettings("testcord_updater_panel"), registrar: "Testcord" },
+    { id: "openTestcordCloudSettings", label: "Open Cloud tab", callback: () => SettingsRouter.openUserSettings("etestcord_cloud_panel"), registrar: "EqTestcordicord" },
+    { id: "openBackupSettings", label: "Open Backup & Restore tab", callback: () => SettingsRouter.openUserSettings("testcord_backup_restore_panel"), registrar: "Testcord" },
+    { id: "restartClient", label: "Restart Client", callback: () => relaunch(), registrar: "Testcord" },
+    { id: "openQuickCSSFile", label: "Open Quick CSS File", callback: () => VencordNative.quickCss.openEditor(), registrar: "Testcord" },
+    { id: "openSettingsFolder", label: "Open Settings Folder", callback: async () => showItemInFolder(await VencordNative.settings.getSettingsDir()), registrar: "Testcord" },
+    { id: "openInGithub", label: "Open in Github", callback: async () => VencordNative.native.openExternal(await getRepo()), registrar: "Testcord" },
 
     {
         id: "openInBrowser", label: "Open in Browser", callback: async () => {
@@ -46,14 +47,9 @@ export const actions: ButtonAction[] = [
                 new URL(newUrl); // Throws if invalid
                 VencordNative.native.openExternal(newUrl);
             } catch {
-                Toasts.show({
-                    message: "Invalid URL",
-                    type: Toasts.Type.FAILURE,
-                    id: Toasts.genId(),
-                    options: {
-                        position: Toasts.Position.BOTTOM
-                    }
-                });
+                showToast("Invalid URL", "failure", {
+                        position: ToastPosition.BOTTOM
+                    });
             }
         }, registrar: "Equicord"
     },
@@ -92,24 +88,14 @@ export const actions: ButtonAction[] = [
                 const text = await res.text();
                 copyToClipboard(text);
 
-                Toasts.show({
-                    message: "Copied response to clipboard!",
-                    type: Toasts.Type.SUCCESS,
-                    id: Toasts.genId(),
-                    options: {
-                        position: Toasts.Position.BOTTOM
-                    }
-                });
+                showToast("Copied response to clipboard!", "success", {
+                        position: ToastPosition.BOTTOM
+                    });
 
             } catch (e) {
-                Toasts.show({
-                    message: "Issue fetching URL",
-                    type: Toasts.Type.FAILURE,
-                    id: Toasts.genId(),
-                    options: {
-                        position: Toasts.Position.BOTTOM
-                    }
-                });
+                showToast("Issue fetching URL", "failure", {
+                        position: ToastPosition.BOTTOM
+                    });
             }
         }, registrar: "Equicord"
     },
@@ -118,14 +104,9 @@ export const actions: ButtonAction[] = [
         id: "copyGitInfo", label: "Copy Git Info", callback: async () => {
             copyToClipboard(`gitHash: ${gitHashShort}\ngitRemote: ${gitRemote}`);
 
-            Toasts.show({
-                message: "Copied git info to clipboard!",
-                type: Toasts.Type.SUCCESS,
-                id: Toasts.genId(),
-                options: {
-                    position: Toasts.Position.BOTTOM
-                }
-            });
+            showToast("Copied git info to clipboard!", "success", {
+                    position: ToastPosition.BOTTOM
+                });
         }, registrar: "Equicord"
     },
 
@@ -135,23 +116,18 @@ export const actions: ButtonAction[] = [
 
             if (isOutdated) {
                 setTimeout(() => showNotification({
-                    title: "A Equicord update is available!",
+                    title: "A Testcord update is available!",
                     body: "Click here to view the update",
                     permanent: true,
                     noPersist: true,
                     onClick() {
-                        SettingsRouter.openUserSettings("equicord_updater_panel");
+                        SettingsRouter.openUserSettings("testcord_updater_panel");
                     }
                 }), 10_000);
             } else {
-                Toasts.show({
-                    message: "No updates available",
-                    type: Toasts.Type.MESSAGE,
-                    id: Toasts.genId(),
-                    options: {
-                        position: Toasts.Position.BOTTOM
-                    }
-                });
+                showToast("No updates available", "message", {
+                        position: ToastPosition.BOTTOM
+                    });
             }
         }, registrar: "Equicord"
     },
@@ -181,14 +157,9 @@ function togglePlugin(plugin: ButtonAction, enabled: boolean) {
 
     Settings.plugins[plugin.id].enabled = enabled;
 
-    Toasts.show({
-        message: `Successfully ${enabled ? "enabled" : "disabled"} ${plugin.id}`,
-        type: Toasts.Type.SUCCESS,
-        id: Toasts.genId(),
-        options: {
-            position: Toasts.Position.BOTTOM
-        }
-    });
+    showToast(`Successfully ${enabled ? "enabled" : "disabled"} ${plugin.id}`, "success", {
+            position: ToastPosition.BOTTOM
+        });
 }
 
 export function registerAction(action: ButtonAction) {

@@ -23,39 +23,25 @@ import { Devs, EquicordDevs } from "@utils/constants";
 import { classes } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import { DiscordPlatform, User } from "@vencord/discord-types";
-import { filters, findStoreLazy, mapMangledModuleLazy } from "@webpack";
-import { AuthenticationStore, PresenceStore, Tooltip, UserStore, useStateFromStores } from "@webpack/common";
-
-export interface Session {
-    sessionId: string;
-    status: string;
-    active: boolean;
-    clientInfo: {
-        version: number;
-        os: string;
-        client: string;
-    };
-}
-
-const SessionsStore = findStoreLazy("SessionsStore") as {
-    getSessions(): Record<string, Session>;
-};
+import { filters, mapMangledModuleLazy } from "@webpack";
+import { AuthenticationStore, PresenceStore, SessionsStore, Tooltip, UserStore, useStateFromStores } from "@webpack/common";
 
 const { useStatusFillColor } = mapMangledModuleLazy([".5625*", "translate"], {
     useStatusFillColor: filters.byCode(".hex")
 });
 
 const platformMap = {
-    embedded: "Console",
+    embedded: "Embedded (Console or Game)",
     vr: "VR"
 };
 
 function Icon(path: string, opts?: { viewBox?: string; width?: number; height?: number; }) {
-    return ({ color, tooltip, small }: { color: string; tooltip: string; small: boolean; }) => (
+    return ({ color, tooltip, small, style }: { color: string; tooltip: string; small: boolean; style?: React.CSSProperties; }) => (
         <Tooltip text={tooltip}>
             {tooltipProps => (
                 <svg
                     {...tooltipProps}
+                    style={style}
                     height={(opts?.height ?? 20) - (small ? 3 : 0)}
                     width={(opts?.width ?? 20) - (small ? 3 : 0)}
                     viewBox={opts?.viewBox ?? "0 0 24 24"}
@@ -78,7 +64,7 @@ const Icons = {
     vencord: Icon("M14.8 2.7 9 3.1V47h3.3c1.7 0 6.2.3 10 .7l6.7.6V2l-4.2.2c-2.4.1-6.9.3-10 .5zm1.8 6.4c1 1.7-1.3 3.6-2.7 2.2C12.7 10.1 13.5 8 15 8c.5 0 1.2.5 1.6 1.1zM16 33c0 6-.4 10-1 10s-1-4-1-10 .4-10 1-10 1 4 1 10zm15-8v23.3l3.8-.7c2-.3 4.7-.6 6-.6H43V3h-2.2c-1.3 0-4-.3-6-.6L31 1.7V25z", { viewBox: "0 0 50 50" }),
 };
 
-const PlatformIcon = ({ platform, status, small }) => {
+const PlatformIcon = ({ platform, status, small, style }: { platform: any; status: any; small: any; style?: any; }) => {
     const tooltip = platformMap[platform] ?? platform.charAt(0).toUpperCase() + platform.slice(1);
     let Icon = Icons[platform] ?? Icons.desktop;
     const { ConsoleIcon } = settings.store;
@@ -99,17 +85,27 @@ const PlatformIcon = ({ platform, status, small }) => {
         }
     }
 
-    return <Icon color={useStatusFillColor(status)} tooltip={tooltip} small={small} />;
+    return <Icon color={useStatusFillColor(status)} tooltip={tooltip} small={small} style={style} />;
 };
 
+let lastSessionsRef: object | null = null;
+let lastOwnStatus: Record<string, string> | null = null;
+// Only sync own status when sessions actually change — not per-message.
+// Called from OwnStatusSync which only mounts for own-user rows (1-2 instances vs 50).
 function useEnsureOwnStatus(user: User) {
-    // Member list rows are recycled across users as you scroll, so this instance can go from
-    // rendering someone else to rendering you. Gating the hook on that made the hook count
-    // flip and tore down the row mid-render.
     const isOwnUser = user?.id === AuthenticationStore.getId();
     const sessions = useStateFromStores([SessionsStore], () => SessionsStore.getSessions());
 
     if (!isOwnUser || typeof sessions !== "object") return;
+    // sessions object identity changes on every SessionStore update, but contents often same —
+    // reuse last computed ownStatus to avoid sort+reduce+mutation churn
+    if (sessions === lastSessionsRef && lastOwnStatus) {
+        const { clientStatuses } = PresenceStore.getState();
+        if (clientStatuses[UserStore.getCurrentUser()?.id] !== lastOwnStatus)
+            clientStatuses[UserStore.getCurrentUser().id] = lastOwnStatus;
+        return;
+    }
+
     const sortedSessions = Object.values(sessions).sort(({ status: a }, { status: b }) => {
         if (a === b) return 0;
         if (a === "online") return 1;
@@ -119,14 +115,16 @@ function useEnsureOwnStatus(user: User) {
         return 0;
     });
 
-    const ownStatus = Object.values(sortedSessions).reduce((acc, curr) => {
+    const ownStatus: Record<string, string> = {};
+    for (const curr of sortedSessions) {
         if (curr.clientInfo.client !== "unknown")
-            acc[curr.clientInfo.client] = curr.status;
-        return acc;
-    }, {});
+            ownStatus[curr.clientInfo.client] = curr.status;
+    }
 
-    const { clientStatuses } = PresenceStore.getState();
-    clientStatuses[UserStore.getCurrentUser().id] = ownStatus;
+    lastSessionsRef = sessions;
+    lastOwnStatus = ownStatus;
+    const currentId = UserStore.getCurrentUser()?.id;
+    if (currentId) PresenceStore.getState().clientStatuses[currentId] = ownStatus;
 }
 
 interface PlatformIndicatorProps {
@@ -157,8 +155,13 @@ const PlatformIndicator = ({ user, isProfile, isMessage, isMemberList }: Platfor
         />
     ));
 
-    if (!icons.length) {
+if (!icons.length) {
         return null;
+    }
+
+    if (isMemberList && icons.length === 1) {
+        const [[platform, platformStatus]] = Object.entries(status);
+        return <PlatformIcon platform={platform as DiscordPlatform} status={platformStatus} small={isProfile || isMemberList} style={{ marginLeft: "4px" }} />;
     }
 
     return (

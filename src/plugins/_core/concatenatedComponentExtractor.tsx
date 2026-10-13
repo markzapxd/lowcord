@@ -26,7 +26,7 @@ export default definePlugin({
         {
             find: /="ltr",orientation:\i="vertical"[^}]+?customTheme:/,
             replacement: {
-                match: /(?=function (\i)\(\i,\i,\i\)\{.{0,20}?return \i\.forwardRef\(function\(\i,\i\)\{let\{[^}]+?="ltr",orientation:)/,
+                match: /(?=function (\i)\(\i,\i,\i\)\{.{0,30}?return (?:(?:\i\.)?forwardRef\()?function\([^)]*\)\{let\{[^}]+?="ltr",orientation:)/,
                 replace: "$self.setCreateScroller($1);"
             }
         },
@@ -34,8 +34,8 @@ export default definePlugin({
             find: '("UserProfileModalV2EditingPanel")',
             replacement: [
                 {
-                    match: /function (\i).{0,50}showNitroIcon:.{0,500}\}\),\i\]\}\)\}/,
-                    replace: "$&$self.setNewCustomizationSection($1);"
+                    match: /function (\i)\(\i\)\{let\{user:.{0,100}("UserProfileModalV2EditingPanel")/,
+                    replace: "$self.setNewCustomizationSection($1);$&"
                 }
             ]
         },

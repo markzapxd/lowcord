@@ -1,22 +1,11 @@
 /*
- * Vencord, a modification for Discord's desktop app
- * Copyright (c) 2022 Vendicated and contributors
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
 
-import gitHash from "~git-hash";
+import { Settings } from "@api/Settings";
+import type { UpdateCommit } from "@main/updater/common";
 
 import { Logger } from "./Logger";
 import { relaunch } from "./native";
@@ -26,57 +15,78 @@ export const UpdateLogger = /* #__PURE__*/ new Logger("Updater", "white");
 export let isOutdated = false;
 export let isNewer = false;
 export let updateError: any;
-export let changes: Record<"hash" | "author" | "message", string>[];
+export let changes: UpdateCommit[];
 
 async function Unwrap<T>(p: Promise<IpcRes<T>>) {
     const res = await p;
 
-    if (res.ok) return res.value;
+    if (res.ok) {
+        // only a fresh failure should surface. updateError used to be
+        // write-only, so a single transient failure (offline, a git lock) left
+        // the error card on screen for the rest of the session.
+        updateError = undefined;
+        return res.value;
+    }
 
     updateError = res.error;
     throw res.error;
 }
 
-export async function checkForUpdates() {
-    changes = await Unwrap(VencordNative.updater.getUpdates());
+export async function checkForUpdates(branch?: string) {
+    const targetBranch = branch ?? Settings.updaterBranch;
+    const result = await Unwrap(VencordNative.updater.getUpdates(targetBranch));
 
-    // we only want to check this for the git updater, not the http updater
-    if (!IS_STANDALONE) {
-        if (changes.some(c => c.hash === gitHash)) {
-            isNewer = true;
-            return (isOutdated = false);
-        }
-    }
-
-    return (isOutdated = changes.length > 0);
+    changes = result.changes;
+    isNewer = result.diverged;
+    return (isOutdated = (changes?.length ?? 0) > 0);
 }
 
-export async function update() {
-    if (!isOutdated) return true;
-
-    const res = await Unwrap(VencordNative.updater.update());
-
-    if (res) {
-        isOutdated = false;
-        if (!await Unwrap(VencordNative.updater.rebuild()))
-            throw new Error("The Build failed. Please try manually building the new update");
-    }
-
-    return res;
+/** true when a plain update would destroy local commits or uncommitted work. */
+export function hasDiverged() {
+    return isNewer;
 }
 
-export async function forceUpdate() {
+async function finishUpdate() {
+    // only clear isOutdated once the new code has actually been built. the
+    // old order cleared it *before* rebuilding, so any build failure left the
+    // working tree on the new commit with stale dist output and the updater
+    // reporting "you're on the latest version" forever.
+    if (!await Unwrap(VencordNative.updater.rebuild()))
+        throw new Error("The Build failed. Please try manually building the new update");
+
+    isOutdated = false;
+    isNewer = false;
+    return true;
+}
+
+export async function update(branch?: string) {
     if (!isOutdated) return true;
 
-    const res = await Unwrap(VencordNative.updater.forceUpdate());
+    const targetBranch = branch ?? Settings.updaterBranch;
+    const outcome = await Unwrap(VencordNative.updater.update(targetBranch));
 
-    if (res) {
-        isOutdated = false;
-        if (!await Unwrap(VencordNative.updater.rebuild()))
-            throw new Error("The Build failed. Please try manually building the new update");
+    if (outcome === "diverged") {
+        // local commits or uncommitted changes. the main process deliberately
+        // did not touch the working tree, so route the user through the
+        // explicit discard flow instead of silently resetting.
+        isNewer = true;
+        return false;
     }
 
-    return res;
+    if (outcome === "upToDate") {
+        isOutdated = false;
+        isNewer = false;
+        return true;
+    }
+
+    return finishUpdate();
+}
+
+export async function forceUpdate(branch?: string) {
+    const targetBranch = branch ?? Settings.updaterBranch;
+    await Unwrap(VencordNative.updater.forceUpdate(targetBranch));
+
+    return finishUpdate();
 }
 
 export const getRepo = () => Unwrap(VencordNative.updater.getRepo());
@@ -86,15 +96,17 @@ export async function maybePromptToUpdate(confirmMessage: string, checkForDev = 
     if (checkForDev && IS_DEV) return;
 
     try {
-        const isOutdated = await checkForUpdates();
-        if (isOutdated) {
-            const wantsUpdate = confirm(confirmMessage);
-            if (wantsUpdate && isNewer) return alert("Your local copy has more recent commits. Please stash or reset them.");
-            if (wantsUpdate) {
-                await update();
-                relaunch();
-            }
+        if (!await checkForUpdates()) return;
+
+        if (!confirm(confirmMessage)) return;
+
+        if (isNewer) {
+            alert("Your local copy has changes that aren't on the remote. Stash or reset them before updating, or use the Discard Local Changes button in the updater settings.");
+            return;
         }
+
+        // don't relaunch when the update bailed out (diverged or build failed)
+        if (await update()) relaunch();
     } catch (err) {
         UpdateLogger.error(err);
         alert("That also failed :( Try updating or re-installing with the installer!");

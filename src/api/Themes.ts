@@ -16,9 +16,12 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+import * as DataStore from "@api/DataStore";
 import { Settings, SettingsStore, type ThemeActivationMode } from "@api/Settings";
 import { createAndAppendStyle } from "@utils/css";
 import { isNonNullish } from "@utils/guards";
+import { Logger } from "@utils/Logger";
+import { parseThemeIdFromCss, themeFileToId } from "@utils/themeIds";
 import { ThemeStore } from "@vencord/discord-types";
 import { PopoutWindowStore } from "@webpack/common";
 
@@ -26,6 +29,8 @@ import { coreStyleRootNode, managedStyleRootNode, userStyleRootNode, vencordRoot
 
 let style: HTMLStyleElement;
 let themesStyle: HTMLStyleElement;
+
+const themeChangeListeners = new Set<() => void>();
 
 function getThemeActivationMode(themeId: string) {
     return Settings.themeActivationModes?.[themeId] ?? "always";
@@ -55,6 +60,46 @@ async function toggle(isEnabled: boolean) {
 
 // for cleanup
 let previousThemeBlobObjectURLs = [] as string[];
+let previousOverrideBlobObjectURLs = [] as string[];
+
+const warnedMissingThemes = new Set<string>();
+
+// Cache for id → fileName resolution
+let themeIdToFile = new Map<string, string>();
+
+async function buildThemeIdMap(): Promise<Map<string, string>> {
+    if (IS_WEB) return new Map();
+    try {
+        const list = await VencordNative.themes.getThemesList();
+        const m = new Map<string, string>();
+        for (const h of list) {
+            const id = (h as any).id ?? themeFileToId(h.fileName);
+            m.set(id.toLowerCase(), h.fileName);
+            m.set(h.fileName.toLowerCase(), h.fileName);
+            // also parse css @id to be safe
+            try {
+                const css = await VencordNative.themes.getThemeData(h.fileName).catch(() => "");
+                if (css) {
+                    const parsed = parseThemeIdFromCss(css, h.fileName);
+                    m.set(parsed.toLowerCase(), h.fileName);
+                }
+            } catch { }
+        }
+        themeIdToFile = m;
+        return m;
+    } catch { return themeIdToFile; }
+}
+
+function resolveThemeFile(entry: string, map: Map<string, string>): string {
+    const lower = entry.toLowerCase();
+    if (map.has(lower)) return map.get(lower)!;
+    const stripped = lower.replace(/\.theme\.css$/i, "").replace(/\.css$/i, "");
+    if (map.has(stripped)) return map.get(stripped)!;
+    if (map.has(stripped + ".theme.css")) return map.get(stripped + ".theme.css")!;
+    if (map.has(stripped + ".css")) return map.get(stripped + ".css")!;
+    if (!lower.endsWith(".css") && map.has(lower + ".css")) return map.get(lower + ".css")!;
+    return entry;
+}
 
 async function initThemes() {
     themesStyle ??= createAndAppendStyle("vencord-themes", userStyleRootNode);
@@ -81,15 +126,41 @@ async function initThemes() {
         }
     }
 
+    // Build id → file map once per init; on web themes are fetched by entry as-is
+    const idMap = IS_WEB ? new Map<string, string>() : await buildThemeIdMap();
+
+    // Migrate enabledThemes from legacy filenames to stable IDs on startup
+    if (!IS_WEB && enabledThemes?.length) {
+        let changed = false;
+        const newEnabled = enabledThemes.map(entry => {
+            const resolved = resolveThemeFile(entry, idMap);
+            for (const [id, targetFile] of idMap.entries()) {
+                if (targetFile.toLowerCase() === resolved.toLowerCase() && !id.endsWith(".css")) {
+                    if (entry !== id) {
+                        changed = true;
+                        return id;
+                    }
+                    return id;
+                }
+            }
+            return entry;
+        });
+        if (changed) {
+            Settings.enabledThemes = Array.from(new Set(newEnabled));
+        }
+    }
+
     if (IS_WEB) {
         previousThemeBlobObjectURLs.forEach(url => URL.revokeObjectURL(url));
 
-        const themesToApply = enabledThemes.filter(theme =>
-            shouldApplyTheme(getThemeActivationMode(theme), activeTheme)
-        );
+        const themesToApply = enabledThemes.filter(theme => {
+            const file = resolveThemeFile(theme, idMap);
+            return shouldApplyTheme(getThemeActivationMode(theme) ?? getThemeActivationMode(file), activeTheme);
+        });
 
         const objectUrls = await Promise.all(themesToApply.map(async theme => {
-            const themeData = await VencordNative.themes.getThemeData(theme);
+            const file = resolveThemeFile(theme, idMap);
+            const themeData = await VencordNative.themes.getThemeData(file).catch(() => VencordNative.themes.getThemeData(theme).catch(() => undefined));
             if (!themeData) return null;
 
             const blob = new Blob([themeData], { type: "text/css" });
@@ -100,15 +171,50 @@ async function initThemes() {
         previousThemeBlobObjectURLs.forEach(url => links.add(url));
     } else {
         const version = Date.now();
-        for (const theme of enabledThemes) {
-            const mode = getThemeActivationMode(theme);
+        for (const entry of enabledThemes) {
+            const themeFile = resolveThemeFile(entry, idMap);
+            const mode = getThemeActivationMode(entry) ?? getThemeActivationMode(themeFile);
             if (!shouldApplyTheme(mode, activeTheme)) continue;
-            links.add(`vencord:///themes/${theme}?v=${version}`);
+            // A missing file would silently produce a dead @import; surface it instead
+            const exists = await VencordNative.themes.getThemeData(themeFile).then(() => true).catch(() => false);
+            if (!exists) {
+                // try fallback to raw entry
+                const fallbackExists = entry !== themeFile ? await VencordNative.themes.getThemeData(entry).then(() => true).catch(() => false) : false;
+                if (!fallbackExists) {
+                    if (!warnedMissingThemes.has(entry)) {
+                        warnedMissingThemes.add(entry);
+                        new Logger("Themes").warn(`Enabled theme "${entry}" (resolved "${themeFile}") was not found in the themes folder, skipping`);
+                    }
+                    continue;
+                }
+                links.add(`vencord:///themes/${entry}?v=${version}`);
+                continue;
+            }
+            links.add(`vencord:///themes/${themeFile}?v=${version}`);
         }
     }
 
+    // Custom versions: per-marketplace-item CSS overrides from DataStore.
+    // They are appended after the base @imports so they win the cascade.
+    // Only enabled base links get their override applied.
+    previousOverrideBlobObjectURLs.forEach(url => URL.revokeObjectURL(url));
+    previousOverrideBlobObjectURLs = [];
+    const overrideUrls = await Promise.all(
+        Array.from(links).map(async link => {
+            // Matches https://themes.equicord.org/api/<id> and .../api/themes/<id>
+            const match = /(?:\/api\/themes\/|\/api\/)(\d+)(?:[/?#]|$)/.exec(link);
+            if (!match) return null;
+            const css = await DataStore.get<string>(`MarketplaceOverride_${Number(match[1])}`).catch(() => undefined);
+            if (!css || !css.trim()) return null;
+            return URL.createObjectURL(new Blob([css], { type: "text/css" }));
+        })
+    );
+    previousOverrideBlobObjectURLs = overrideUrls.filter(isNonNullish);
+    previousOverrideBlobObjectURLs.forEach(url => links.add(url));
+
     themesStyle.textContent = Array.from(links).map(link => `@import url("${link.trim()}");`).join("\n");
     updatePopoutWindows();
+    themeChangeListeners.forEach(listener => listener());
 }
 
 function applyToPopout(popoutWindow: Window | undefined, key: string) {
@@ -176,4 +282,17 @@ export function initQuickCssThemeStore(themeStore: ThemeStore) {
         currentTheme = themeStore.theme;
         initThemes();
     });
+}
+
+export function addThemeChangeListener(listener: () => void) {
+    themeChangeListeners.add(listener);
+}
+
+export function removeThemeChangeListener(listener: () => void) {
+    themeChangeListeners.delete(listener);
+}
+
+/** Re-runs theme application. Call after a marketplace override is saved or deleted (DataStore isn't reactive). */
+export function reapplyThemes() {
+    void initThemes();
 }

@@ -167,7 +167,7 @@ function activeNowView(cards) {
 export default definePlugin({
     name: "ClientSideBlock",
     description: "Allows you to locally hide almost all content from any user",
-    tags: ["Utility"],
+    tags: ["Utility", "Appearance", "Privacy"],
     searchTerms: ["blocked", "block", "hide", "hidden", "noblockedmessages"],
     authors: [Devs.Samwich, EquicordDevs.KamiRu],
     settings,
@@ -188,8 +188,8 @@ export default definePlugin({
         {
             find: "peopleListItemRef.current.componentWillLeave",
             replacement: {
-                match: /\i}=this.state;/,
-                replace: "$&if($self.shouldHideUser(this.props.user.id)) return null; "
+                match: /return \i===\i\.\i\.FRIEND_ANNIVERSARY/,
+                replace: "if($self.shouldHideUser(this.props.user.id)) return null;$&"
             }
         },
         // member list

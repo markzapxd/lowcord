@@ -11,14 +11,48 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { getTestcordIconColor } from "@testcordplugins/TestcordHelper/iconColors";
 import { Logger } from "@utils/Logger";
 import { classes } from "@utils/misc";
-import { findComponentByCodeLazy, findCssClassesLazy } from "@webpack";
+import { find, findComponentByCodeLazy, findCssClassesLazy, findModuleId, wreq } from "@webpack";
 import { Clickable, Tooltip, useEffect, useState } from "@webpack/common";
 import type { ComponentType, CSSProperties, JSX, MouseEventHandler, ReactNode } from "react";
 
 const logger = new Logger("HeaderBarAPI");
 
 const HeaderBarClasses = findCssClassesLazy("clickable", "selected", "badge", "badgeContainer");
-const HeaderBarIcon = findComponentByCodeLazy(".HEADER_BAR_BADGE_TOP:", '"aria-haspopup":') as ComponentType<ChannelToolbarButtonProps>;
+const ToolbarClasses = findCssClassesLazy("iconWrapper", "clickable");
+
+function findDiscordHeaderBarIcon(): ComponentType<ChannelToolbarButtonProps> | null {
+    const id = findModuleId("HEADER_BAR_BADGE_TOP");
+    if (id) {
+        const mod = wreq(id);
+        if (mod) {
+            for (const key of Object.keys(mod)) {
+                const exp = mod[key];
+                if (exp && typeof exp === "object" && typeof exp.render === "function") {
+                    return exp;
+                }
+            }
+        }
+    }
+    return find((m: any) => {
+        if (!m || typeof m !== "object") return false;
+        for (const k in m) {
+            const exp = m[k];
+            if (exp && typeof exp === "object" && typeof exp.render === "function") {
+                const s = exp.render.toString();
+                if (s.includes('"aria-haspopup":') && s.includes("tooltipSpacing")) {
+                    return exp;
+                }
+            }
+        }
+        return false;
+    });
+}
+
+// Equicord upstream now uses a direct findComponentByCodeLazy anchor — more resilient after minification.
+// Testcord keeps its thorough fallback (findDiscordHeaderBarIcon) but prefers upstream's anchor to get new logic without breaking color handling.
+// The fallback remains for resilience if Discord renames the anchor.
+export const HeaderBarIcon: ComponentType<ChannelToolbarButtonProps> = findComponentByCodeLazy("tooltipPosition:", '"aria-haspopup":', '"data-jump-section":') as ComponentType<ChannelToolbarButtonProps>;
+void findDiscordHeaderBarIcon;
 const TESTCORD_TOP_BAR_ICON_COLOR_SETTING: ["plugins.TestcordHelper.topBarButtonIconColor"] = ["plugins.TestcordHelper.topBarButtonIconColor"];
 const TESTCORD_HEADER_BAR_ICON_COLOR_SETTING: ["plugins.TestcordHelper.headerBarButtonIconColor"] = ["plugins.TestcordHelper.headerBarButtonIconColor"];
 
@@ -163,22 +197,60 @@ export function ChannelToolbarButton(props: ChannelToolbarButtonProps) {
         "--vc-plugin-icon-color": iconColor
     };
 
+    const handleClick: MouseEventHandler<HTMLDivElement> = event => {
+        props.onClick?.(event);
+        channelToolbarListeners.forEach(listener => listener());
+    };
+
+    const handleContextMenu: MouseEventHandler<HTMLDivElement> = event => {
+        props.onContextMenu?.(event);
+        channelToolbarListeners.forEach(listener => listener());
+    };
+
+    const hasWrapped = Boolean((HeaderBarIcon as any)?.$$vencordGetWrappedComponent?.());
+
     return (
         <span className="vc-plugin-icon-button" style={wrapperStyle}>
-            <HeaderBarIcon
-                key={String(props.tooltip)}
-                {...props}
-                className={classes("vc-plugin-icon-button", props.className)}
-                iconClassName={classes("vc-plugin-icon-button", props.iconClassName)}
-                onClick={event => {
-                    props.onClick?.(event);
-                    channelToolbarListeners.forEach(listener => listener());
-                }}
-                onContextMenu={event => {
-                    props.onContextMenu?.(event);
-                    channelToolbarListeners.forEach(listener => listener());
-                }}
-            />
+            {hasWrapped ? (
+                <HeaderBarIcon
+                    key={String(props.tooltip)}
+                    {...props}
+                    className={classes("vc-plugin-icon-button", props.className)}
+                    iconClassName={classes("vc-plugin-icon-button", props.iconClassName)}
+                    onClick={handleClick}
+                    onContextMenu={handleContextMenu}
+                />
+            ) : (
+                <Tooltip text={props.tooltip} position={props.position ?? "bottom"}>
+                    {tooltipProps => (
+                        <Clickable
+                            {...tooltipProps}
+                            className={classes(
+                                ToolbarClasses.iconWrapper ?? "iconWrapper__9293f",
+                                ToolbarClasses.clickable ?? "clickable__9293f",
+                                "vc-plugin-icon-button",
+                                props.className,
+                                props.selected && (HeaderBarClasses.selected ?? "selected__9293f"),
+                                props.disabled && "disabled"
+                            )}
+                            onClick={props.disabled ? undefined : handleClick}
+                            onContextMenu={props.disabled ? undefined : handleContextMenu}
+                            role="button"
+                            aria-label={props["aria-label"] ?? (typeof props.tooltip === "string" ? props.tooltip : undefined)}
+                            tabIndex={props.disabled ? -1 : 0}
+                        >
+                            {props.icon && (
+                                <props.icon
+                                    className={classes("icon__9293f", props.iconClassName)}
+                                    width={props.iconSize ?? 24}
+                                    height={props.iconSize ?? 24}
+                                    aria-hidden="true"
+                                />
+                            )}
+                        </Clickable>
+                    )}
+                </Tooltip>
+            )}
         </span>
     );
 }

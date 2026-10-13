@@ -526,6 +526,73 @@ function runFactoryWithWrap(patchedFactory: PatchedModuleFactory, thisArg: unkno
     return factoryReturn;
 }
 
+interface AppliedReplacement {
+    plugin: string;
+    find: string;
+    match: string | RegExp;
+    replace: string;
+}
+
+/**
+ * Replacements applied per module, in order, so a module that fails to parse can be
+ * bisected back to the one that broke it. Only read on the failure path.
+ */
+const appliedReplacements = new Map<string, AppliedReplacement[]>();
+
+/** Whether a factory body parses. Only a SyntaxError counts as "does not parse". */
+function parsesAsFactory(code: string): boolean {
+    try {
+        (0, eval)(`${code}\n//# sourceURL=file:///webpackmodule-probe`);
+        return true;
+    } catch (err) {
+        return !(err instanceof SyntaxError);
+    }
+}
+
+/**
+ * Drop the replacements that made a module unparseable, keeping the rest.
+ *
+ * A module can be patched by a dozen plugins, so reverting all of them because one of
+ * them broke is a terrible trade: it silently disables every other plugin on that module.
+ * On the member list that took out the DM profile sidebar along with it, because the DM
+ * sidebar, the member list and several unrelated plugins all live in the same factory.
+ *
+ * Replays the applied replacements in order, re-parsing as it goes, and stops at the
+ * first one that breaks the syntax. Everything applied before it is known good, so the
+ * module is rebuilt from the original code with only the offenders skipped.
+ *
+ * @returns Recoverable code, or null when no subset could be made to parse.
+ */
+function dropSyntaxOffenders(
+    originalPatchedCode: string,
+    moduleIdStr: string
+): { code: string; offenders: AppliedReplacement[]; } | null {
+    const applied = appliedReplacements.get(moduleIdStr);
+    if (!applied?.length) return null;
+
+    const offenders: AppliedReplacement[] = [];
+    let good = originalPatchedCode;
+
+    for (const entry of applied) {
+        let next: string;
+        try {
+            next = good.replace(entry.match, entry.replace);
+        } catch {
+            // The replace itself threw, so it never produced code. Drop it.
+            offenders.push(entry);
+            continue;
+        }
+        if (next === good) continue; // no effect, nothing to keep or blame
+        if (parsesAsFactory(next)) {
+            good = next;
+        } else {
+            offenders.push(entry);
+        }
+    }
+
+    return offenders.length > 0 ? { code: good, offenders } : null;
+}
+
 /**
  * Patches a module factory.
  *
@@ -539,8 +606,11 @@ function patchFactory(moduleId: PropertyKey, originalFactory: AnyModuleFactory):
 
     // 0, prefix to turn it into an expression: 0,function(){} would be invalid syntax without the 0,
     let patchedCode = "0," + (!isArrowFunction ? "function" : "") + originalFactoryCode.slice(originalFactoryCode.indexOf("("));
+    const originalPatchedCode = patchedCode;
     let patchedSource = patchedCode;
     let patchedFactory = originalFactory;
+    const moduleIdStr = String(moduleId);
+    appliedReplacements.set(moduleIdStr, []);
 
     const patchedBy = new Set<string>();
 
@@ -646,44 +716,13 @@ function patchFactory(moduleId: PropertyKey, originalFactory: AnyModuleFactory):
                     continue;
                 }
 
-                const fixedCode = newPatchedCode.replace(/\breturn(false|true|null|undefined)\b/g, "return $1");
-                const moduleIdStr = String(moduleId);
-                let newPatchedSource: string;
-                if (IS_DEV) {
-                    const pluginsList = [...patchedBy];
-                    if (!patchedBy.has(patch.plugin)) {
-                        pluginsList.push(patch.plugin);
-                    }
-                    newPatchedSource = `// Webpack Module ${moduleIdStr} - Patched by ${pluginsList.join(", ")}\n${fixedCode}\n//# sourceURL=file:///WebpackModule${moduleIdStr}`;
-                } else {
-                    newPatchedSource = `${fixedCode}\n//# sourceURL=file:///WebpackModule${moduleIdStr}`;
-                }
-                const newPatchedFactory = (0, eval)(newPatchedSource);
-
                 if (!patchedBy.has(patch.plugin)) {
                     // Conflict detection: if another plugin already patched this
-                    // module, record a warning. This doesn't mean the patches are
-                    // incompatible — many plugins intentionally patch the same
-                    // module — but it's useful for the user to know.
+                    // module, log for dev awareness. This doesn't mean the patches are
+                    // incompatible — many plugins intentionally patch the same module.
                     const otherPlugins = [...patchedBy].filter(p => p !== patch.plugin);
-                    if (otherPlugins.length > 0) {
-                        const otherList = otherPlugins.sort().join(", ");
-                        PluginHealth.recordPatchFailure(patch.plugin, {
-                            kind: "conflict",
-                            find: String(patch.find),
-                            match: String(replacement.match),
-                            moduleId: String(moduleId),
-                            error: `Also patched by: ${otherList}`
-                        });
-                        for (const other of otherPlugins) {
-                            PluginHealth.recordPatchFailure(other, {
-                                kind: "conflict",
-                                find: String(patch.find),
-                                match: String(replacement.match),
-                                moduleId: String(moduleId),
-                                error: `Also patched by: ${[patch.plugin, ...otherPlugins.filter(p => p !== other)].sort().join(", ")}`
-                            });
-                        }
+                    if (otherPlugins.length > 0 && IS_DEV) {
+                        logger.info(`Module ${String(moduleId)} (${String(patch.find)}) patched by ${patch.plugin} was also patched by: ${otherPlugins.sort().join(", ")}`);
                     }
 
                     patchedBy.add(patch.plugin);
@@ -691,8 +730,15 @@ function patchFactory(moduleId: PropertyKey, originalFactory: AnyModuleFactory):
                 }
 
                 patchedCode = newPatchedCode;
-                patchedSource = newPatchedSource;
-                patchedFactory = newPatchedFactory;
+                const applied = appliedReplacements.get(moduleIdStr);
+                if (applied) {
+                    applied.push({
+                        plugin: patch.plugin,
+                        find: String(patch.find),
+                        match: replacement.match,
+                        replace: replacement.replace as string
+                    });
+                }
             } catch (err) {
                 // FIXME: Maybe fix this properly
                 const shouldSuppressError = patch.plugin === "ContextMenuAPI" && err instanceof SyntaxError && err.message.includes("arguments");
@@ -760,8 +806,78 @@ function patchFactory(moduleId: PropertyKey, originalFactory: AnyModuleFactory):
                 patch.plugin,
                 String(patch.find),
                 originalFactoryCode,
-                shouldCheckBuildNumber ? buildNumber : -1
+                shouldCheckBuildNumber ? buildNumber : -1,
+                String(moduleId)
             );
+        }
+    }
+
+    // One eval for the whole module, not one per replacement. Every replacement used to
+    // re-serialise and re-eval the entire module, so a module that nine plugins patch was
+    // parsed, compiled and *executed* nine times before it was handed to webpack. Nothing
+    // inside the loop reads the factory, and a group rollback only ever restores the code,
+    // so the factory is derived once here from whatever survived the loop. The `return`
+    // fixup is applied to that final code for the same reason it used to be applied to the
+    // last replacement: `patchedCode` itself is kept unfixed so later anchors still match
+    // the shape the previous replacement produced.
+    if (patchedCode !== originalPatchedCode) {
+        const fixedCode = patchedCode.replace(/\breturn(false|true|null|undefined)\b/g, "return $1");
+        if (IS_DEV) {
+            patchedSource = `// Webpack Module ${moduleIdStr} - Patched by ${[...patchedBy].join(", ")}\n${fixedCode}\n//# sourceURL=file:///WebpackModule${moduleIdStr}`;
+        } else {
+            patchedSource = `${fixedCode}\n//# sourceURL=file:///WebpackModule${moduleIdStr}`;
+        }
+
+        // This has to stay inside the same failure handling the per-replacement eval had.
+        // A replacement can produce code that no longer parses - that is exactly what a
+        // patch whose `find` matched but whose `match` matched the wrong shape looks like -
+        // and while the eval was per replacement that SyntaxError was caught below, logged
+        // against the plugin that caused it, and the module still loaded. Hoisting the eval
+        // out of the loop put it on the factory path, where a SyntaxError propagates out of
+        // `patchFactory`, so the module never loads and every flux handler and component it
+        // exports is gone: React unmounts the tree, and the crash handler immediately
+        // navigates to @me. The freeze was this throwing, repeatedly, on channel switches.
+        //
+        // Falling back to the unpatched factory is what a `noModule` looks like to webpack,
+        // so the module loads and only the one plugin's effect is missing.
+        try {
+            patchedFactory = (0, eval)(patchedSource);
+        } catch (err) {
+            const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+            const recovered = dropSyntaxOffenders(originalPatchedCode, moduleIdStr);
+
+            for (const offender of recovered?.offenders ?? []) {
+                logger.error(
+                    `Patch by ${offender.plugin} broke module ${moduleIdStr} and was skipped: `
+                    + `${offender.find} / ${offender.match}\n${error}`,
+                    IS_DEV ? patchedSource : undefined
+                );
+                PluginHealth.recordPatchFailure(offender.plugin, {
+                    kind: "errored",
+                    find: offender.find,
+                    match: String(offender.match),
+                    moduleId: moduleIdStr,
+                    error
+                });
+            }
+
+            if (!recovered) {
+                logger.error(
+                    `Patched code for module ${moduleIdStr} did not parse and no subset could be `
+                    + `recovered, reverting every patch on it (applied by: ${[...patchedBy].join(", ") || "unknown"}). `
+                    + error,
+                    IS_DEV ? patchedSource : undefined
+                );
+                patchedFactory = originalFactory;
+                patchedSource = patchedCode;
+            } else {
+                patchedSource = IS_DEV
+                    ? `// Webpack Module ${moduleIdStr} - Patched by ${[...patchedBy].join(", ")}, `
+                        + `minus ${recovered.offenders.map(o => o.plugin).join(", ")}\n${recovered.code}`
+                        + `\n//# sourceURL=file:///WebpackModule${moduleIdStr}`
+                    : `${recovered.code}\n//# sourceURL=file:///WebpackModule${moduleIdStr}`;
+                patchedFactory = (0, eval)(patchedSource);
+            }
         }
     }
 

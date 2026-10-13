@@ -24,17 +24,52 @@ const DS_KEY_MIC_DEVICE = "nightcord-ghost-mic-device-label";
 const DS_KEY_SELECTED = "nightcord-ghost-selected";
 
 const MI_TOKEN_CACHE_KEY = "nightcord-mi-token-cache";
-const TI_ACCOUNTS_KEY = "TokenImporter_accounts";
+const TI_ACCOUNTS_KEY = "DXTokenImporter_accounts"; // renamed from TokenImporter when the plugin became DXTokenImporter
 
 let ghostMicLabel: string = "default";
 
 const Native = VencordNative.pluginHelpers.GhostClient as PluginNative<typeof import("./native")>;
 
-function GhostIcon({ width = 20, height = 20, className }: { width?: number; height?: number; className?: string; }) {
+function GhostIcon({ width = 20, height = 20, className, active }: { width?: number; height?: number; className?: string; active?: boolean }) {
+    const lineLength = 30;
+    const lineStyle: React.CSSProperties = {
+        strokeDasharray: lineLength,
+        strokeDashoffset: active ? lineLength : 0,
+        transition: "stroke-dashoffset 0.1s ease-in-out",
+    };
+
     return (
         <svg aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width={width} height={height} className={className} fill="none" viewBox="0 0 24 24">
-            <path fill="currentColor" d="M16 6a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM2 20.53A9.53 9.53 0 0 1 11.53 11h.94c1.28 0 2.5.25 3.61.7.41.18.36.77-.05.96a7 7 0 0 0-3.65 8.6c.11.36-.13.74-.5.74H6.15a.5.5 0 0 1-.5-.55l.27-2.6c.02-.26-.27-.37-.41-.16-.48.74-1.03 1.8-1.32 2.9a.53.53 0 0 1-.5.41h-.22C2.66 22 2 21.34 2 20.53Z" />
-            <path fill="currentColor" d="M24 19a5 5 0 1 1-10 0 5 5 0 0 1 10 0Z" />
+            <mask id="ghostClientLine">
+                <rect width="100%" height="100%" fill="#ffffff" />
+                <line
+                    className="blackLine"
+                    x1="22"
+                    y1="2"
+                    x2="2"
+                    y2="22"
+                    stroke="#000000"
+                    strokeWidth="6"
+                    strokeLinecap="round"
+                    style={lineStyle}
+                />
+            </mask>
+
+            <g mask="url(#ghostClientLine)">
+                <path fill={!active ? "var(--status-danger)" : "currentColor"} d="M16 6a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM2 20.53A9.53 9.53 0 0 1 11.53 11h.94c1.28 0 2.5.25 3.61.7.41.18.36.77-.05.96a7 7 0 0 0-3.65 8.6c.11.36-.13.74-.5.74H6.15a.5.5 0 0 1-.5-.55l.27-2.6c.02-.26-.27-.37-.41-.16-.48.74-1.03 1.8-1.32 2.9a.53.53 0 0 1-.5.41h-.22C2.66 22 2 21.34 2 20.53Z" />
+                <path fill={!active ? "var(--status-danger)" : "currentColor"} d="M24 19a5 5 0 1 1-10 0 5 5 0 0 1 10 0Z" />
+            </g>
+
+            <line
+                x1="22"
+                y1="2"
+                x2="2"
+                y2="22"
+                stroke="var(--status-danger, currentColor)"
+                strokeWidth="2"
+                strokeLinecap="round"
+                style={lineStyle}
+            />
         </svg>
     );
 }
@@ -751,9 +786,9 @@ const GhostUserAreaButton: UserAreaButtonFactory = ({ iconForeground, hideToolti
         <div ref={btnRef} style={{ position: "relative" }}>
             <UserAreaButton
                 tooltipText={hideTooltips ? undefined : "Ghost Accounts — left click: toggle | right click: config"}
-                icon={<GhostIcon className={`${iconForeground} ${anyActive ? "gc-icon--active" : ""}`} />}
+                icon={<GhostIcon className={`${iconForeground} ${anyActive ? "gc-icon--active" : ""}`} active={anyActive} />}
                 plated={nameplate != null}
-                redGlow={false}
+                redGlow={!anyActive}
                 onClick={handleLeftClick}
                 onContextMenu={e => { e.preventDefault(); e.stopPropagation(); openPopover(); }}
             />

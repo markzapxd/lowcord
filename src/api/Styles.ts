@@ -19,6 +19,7 @@
 import { generateTextCss } from "@components/BaseText";
 import { generateMarginCss } from "@components/margins";
 import { classNameFactory as _classNameFactory, classNameToSelector } from "@utils/css";
+import { removeFromArray } from "@utils/misc";
 
 // Backwards compat for Vesktop
 /** @deprecated Import this from `@utils/css` instead */
@@ -28,10 +29,63 @@ export interface Style {
     name: string;
     source: string;
     classNames: Record<string, string>;
-    dom: HTMLStyleElement | null;
+    /** Set while the style is enabled. Kept for the enable/disable guards. */
+    enabled: boolean;
+    /**
+     * Position in the cascade, assigned on first enable. The composed sheet has to list
+     * styles in the order they were enabled, because that is the order `appendChild` used
+     * to give them when each one had its own element.
+     */
+    order?: number;
+    /** The style's own interpolated CSS, recomputed by {@link compileStyle}. */
+    compiled: string;
 }
 
 export const styleMap = window.VencordStyles ??= new Map();
+
+/**
+ * Every managed style used to get its own `<style>` element appended to
+ * {@link managedStyleRootNode}. With several hundred plugins enabled that is several
+ * hundred stylesheet objects, each with its own CSSOM and its own bookkeeping in the
+ * style invalidation pass, all of which the engine has to walk on a recalc. They share a
+ * single container and have no ordering requirement against each other beyond enable
+ * order, so they are composed into one element instead.
+ */
+const managedStyleNode = document.createElement("style");
+let managedEnableCounter = 0;
+
+/**
+ * Enabled styles in cascade order, maintained on enable/disable instead of being rebuilt by
+ * filtering and sorting the whole map. `style.order` is a unique counter, so this is just
+ * that counter ascending.
+ */
+const enabledStyles: Style[] = [];
+
+/** Last string written to the node, so an unchanged compose costs no DOM write at all. */
+let composedCss = "";
+
+/**
+ * Assigning `textContent` reparses the entire concatenated sheet, so a run of toggles that
+ * all land before the next paint only needs to pay for one parse rather than one each.
+ * A microtask rather than `requestAnimationFrame`, because rAF does not fire in a
+ * backgrounded tab and the styles would then never be applied.
+ */
+let composeScheduled = false;
+
+function scheduleCompose() {
+    if (composeScheduled) return;
+    composeScheduled = true;
+
+    queueMicrotask(() => {
+        composeScheduled = false;
+
+        const css = enabledStyles.map(s => s.compiled).join("\n");
+        if (css === composedCss) return;
+
+        composedCss = css;
+        managedStyleNode.textContent = css;
+    });
+}
 
 export const vencordRootNode = document.createElement("vencord-root");
 /**
@@ -111,16 +165,23 @@ export function requireStyle(name: string) {
 export function enableStyle(name: string) {
     const style = requireStyle(name);
 
-    if (style.dom?.isConnected)
+    if (style.enabled)
         return false;
 
-    if (!style.dom) {
-        style.dom = document.createElement("style");
-        style.dom.dataset.vencordName = style.name;
-    }
+    style.enabled = true;
+    if (style.order === undefined)
+        style.order = managedEnableCounter++;
+
+    // Ascending `order` is the cascade, and the counter is unique, so the insert position
+    // is found by comparison rather than by re-sorting the list.
+    const index = enabledStyles.findIndex(s => (s.order ?? 0) > (style.order ?? 0));
+    if (index === -1) enabledStyles.push(style);
+    else enabledStyles.splice(index, 0, style);
+
     compileStyle(style);
 
-    managedStyleRootNode.appendChild(style.dom);
+    if (!managedStyleNode.isConnected)
+        managedStyleRootNode.appendChild(managedStyleNode);
     return true;
 }
 
@@ -131,11 +192,13 @@ export function enableStyle(name: string) {
  */
 export function disableStyle(name: string) {
     const style = requireStyle(name);
-    if (!style.dom?.isConnected)
+    if (!style.enabled)
         return false;
 
-    style.dom.remove();
-    style.dom = null;
+    style.enabled = false;
+    style.order = undefined;
+    removeFromArray(enabledStyles, s => s === style);
+    scheduleCompose();
     return true;
 }
 
@@ -151,13 +214,14 @@ export const toggleStyle = (name: string) => isStyleEnabled(name) ? disableStyle
  * @returns Whether the style is enabled
  * @see {@link enableStyle} for info on getting the name of an imported style
  */
-export const isStyleEnabled = (name: string) => requireStyle(name).dom?.isConnected ?? false;
+export const isStyleEnabled = (name: string) => requireStyle(name).enabled;
 
 export function removeStyle(name: string) {
     const style = styleMap.get(name);
     if (!style) return false;
-    if (style.dom) style.dom.remove();
     styleMap.delete(name);
+    removeFromArray(enabledStyles, s => s === style);
+    scheduleCompose();
     return true;
 }
 
@@ -195,17 +259,15 @@ export const setStyleClassNames = (name: string, classNames: Record<string, stri
 };
 
 /**
- * Updates the stylesheet after doing the following to the sourcecode:
- *   - Interpolate style classnames
- * @param style **_Must_ be a style with a DOM element**
+ * Recomputes a style's interpolated CSS and refreshes the composed sheet.
  * @see {@link setStyleClassNames} for more info on style classnames
  */
 export const compileStyle = (style: Style) => {
-    if (!style.dom) throw new Error("Style has no DOM element");
-
-    style.dom.textContent = style.source
+    style.compiled = style.source
         .replace(/\[--(\w+)\]/g, (match, name) => {
             const className = style.classNames[name];
             return className ? classNameToSelector(className) : match;
         });
+
+    scheduleCompose();
 };

@@ -205,13 +205,19 @@ export const settings = definePluginSettings({
     }
 });
 
+let cachedUserIdList: string[] = [];
+let cachedUserIdsRaw: string | undefined;
 function getUserIdList() {
+    const raw = settings.store.userIds;
+    if (raw === cachedUserIdsRaw) return cachedUserIdList;
+    cachedUserIdsRaw = raw;
     try {
-        return settings.store.userIds.split(",").filter(Boolean);
+        cachedUserIdList = raw.split(",").filter(Boolean);
     } catch (e) {
         settings.store.userIds = "";
-        return [];
+        cachedUserIdList = [];
     }
+    return cachedUserIdList;
 }
 
 // show rich body with user avatar
@@ -289,7 +295,7 @@ const lastStatuses = new Map<string, string>();
 
 export default definePlugin({
     name: "NotifyUserChanges",
-    description: "Adds a notify option in the user context menu to get notified when a user changes voice channels or online status",
+    description: "Adds a notify option in the user context menu to get notified when a user changes voice channels, online status, or sends a message",
     tags: ["Friends", "Notifications"],
     authors: [TestcordDevs.x2b],
 
@@ -337,7 +343,6 @@ export default definePlugin({
                 // this is also triggered for multiple guilds and when only the activities change, so we have to check if the status actually changed
                 if (lastStatuses.has(userId) && lastStatuses.get(userId) !== status) {
                     const user = UserStore.getUser(userId);
-                    // @ts-ignore
                     const name = user.globalName || username;
 
                     showNotification({

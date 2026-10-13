@@ -72,9 +72,9 @@ window.VencordNative = {
 
     updater: {
         getRepo: async () => ({ ok: true, value: "https://github.com/Equicord/Equicord" }),
-        getUpdates: async () => ({ ok: true, value: [] }),
-        update: async () => ({ ok: true, value: false }),
-        forceUpdate: async () => ({ ok: true, value: false }),
+        getUpdates: async () => ({ ok: true, value: { changes: [], diverged: false } }),
+        update: async () => ({ ok: true, value: "upToDate" as const }),
+        forceUpdate: async () => ({ ok: true, value: "upToDate" as const }),
         rebuild: async () => ({ ok: true, value: true }),
     },
 
@@ -124,7 +124,8 @@ window.VencordNative = {
     settings: {
         get: () => {
             try {
-                return JSON.parse(localStorage.getItem("EquicordSettings") || "{}");
+                const settings = JSON.parse(localStorage.getItem("EquicordSettings") || "{}");
+                return typeof settings === "string" ? JSON.parse(settings) : settings;
             } catch (e) {
                 console.error("Failed to parse settings from localStorage: ", e);
                 return {};
@@ -147,7 +148,10 @@ window.VencordNative = {
     },
 
     pluginHelpers: {} as any,
+    privacy: {} as any,
     csp: {} as any,
+    // Desktop-only tray IPC, inert in the browser but needed for the stub to satisfy
+    // the native surface type.
     tray: {
         setUpdateState: NOOP,
         onCheckUpdates: NOOP,

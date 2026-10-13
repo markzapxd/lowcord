@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { definePluginSettings } from "@api/Settings";
+import { definePluginSettings, useSettings } from "@api/Settings";
 import { BackupRestoreIcon, BookmarkIcon, CloudIcon, InfoIcon, LogIcon, PaintbrushIcon, PatchHelperIcon, PluginsIcon, SafetyIcon, TestCordIcon, UpdaterIcon } from "@components/Icons";
 import {
     BackupAndRestoreTab,
@@ -14,6 +14,7 @@ import {
     PatchHelperTab,
     PluginsTab,
     PresetsTab,
+    PrivacySecurityPanel,
     StatsTab,
     ThemesTab,
     UpdaterTab,
@@ -105,22 +106,55 @@ interface SettingsLayoutBuilder {
     buildLayout(): SettingsLayoutNode[];
 }
 
-const TESTCORD_MAIN_ENTRY_KEY = "equicord_main";
+const TESTCORD_MAIN_ENTRY_KEY = "testcord_main";
 
+// PURE: no writes. Must return the same result no matter which caller (editor
+// or sidebar sync) runs first, otherwise the editor row and the live sidebar
+// disagree about a tab's visibility. "Newness" is recorded only at save time
+// (see markKnownTestcordTabs in saveVisibleTabs), never here.
 function readVisibleTestcordTabs(validKeys: string[]) {
     const stored = settings.store.visibleSettingsTabs;
+
+    // No customization yet -> everything visible.
     if (!Array.isArray(stored) || stored.length === 0) return validKeys;
 
     const validKeySet = new Set(validKeys);
     const visible = stored.filter((key): key is string => typeof key === "string" && validKeySet.has(key));
 
-    return visible.includes(TESTCORD_MAIN_ENTRY_KEY)
-        ? visible
-        : [TESTCORD_MAIN_ENTRY_KEY, ...visible];
+    // A valid key absent from the allowlist is either explicitly hidden (it's
+    // in the "known" set) or brand-new (never seen -> default visible).
+    const known = readKnownTestcordTabs();
+    const newKeys = validKeys.filter(key => !known.has(key) && !visible.includes(key));
+
+    const withNew = [...visible, ...newKeys];
+
+    return withNew.includes(TESTCORD_MAIN_ENTRY_KEY)
+        ? withNew
+        : [TESTCORD_MAIN_ENTRY_KEY, ...withNew];
 }
 
 function writeVisibleTestcordTabs(keys: string[]) {
     settings.store.visibleSettingsTabs = keys;
+}
+
+function readKnownTestcordTabs() {
+    const stored = settings.store.knownSettingsTabs;
+    return new Set(Array.isArray(stored)
+        ? stored.filter((key): key is string => typeof key === "string")
+        : []);
+}
+
+function writeKnownTestcordTabs(keys: string[]) {
+    settings.store.knownSettingsTabs = keys;
+}
+
+// Merge the given keys into the persisted "known" set (union, order-preserving).
+function markKnownTestcordTabs(keys: string[]) {
+    const known = readKnownTestcordTabs();
+    const additions = keys.filter(key => !known.has(key));
+    if (additions.length > 0) {
+        writeKnownTestcordTabs([...known, ...additions]);
+    }
 }
 
 function readTestcordTabOrder(validKeys: string[]) {
@@ -195,7 +229,13 @@ function getTestcordTabDescriptors(entries: SettingsLayoutNode[]): TestcordTabDe
     return entries.map(entry => ({
         key: entry.key!,
         title: entry.useTitle!(),
-        Icon: entry.icon ? (() => entry.icon!()) as ComponentType<IconProps> : undefined,
+        Icon: entry.icon ? ((props: any) => {
+            try {
+                return entry.icon!() as any;
+            } catch {
+                return null;
+            }
+        }) as ComponentType<IconProps> : undefined,
         locked: entry.key === TESTCORD_MAIN_ENTRY_KEY
     }));
 }
@@ -258,6 +298,12 @@ function TestcordTabsEditor({ tabs }: { tabs: TestcordTabDescriptor[]; }) {
         const nextVisibleKeys = nextKeys.includes(TESTCORD_MAIN_ENTRY_KEY)
             ? nextKeys
             : [TESTCORD_MAIN_ENTRY_KEY, ...nextKeys];
+
+        // Every tab currently valid has now been presented to the user and had a
+        // chance to be toggled, so mark them all known. This is what keeps a
+        // just-hidden tab hidden on the next (pure) read, while any tab
+        // registered AFTER this save is still "new" and defaults to visible.
+        markKnownTestcordTabs(validKeys);
 
         setVisibleKeys(nextVisibleKeys);
         writeVisibleTestcordTabs(nextVisibleKeys);
@@ -529,12 +575,18 @@ const settings = definePluginSettings({
     },
     includeVencordInfoWhenCopying: {
         type: OptionType.BOOLEAN,
-        description: "Also copy Equicord info (Equicord, Electron, Chromium) when clicking the version info in the bottom left area of the Settings page",
+        description: "Also copy Testcord info (Testcord, Electron, Chromium) when clicking the version info in the bottom left area of the Settings page",
         default: true
     },
     visibleSettingsTabs: {
         type: OptionType.CUSTOM,
         description: "Visible Testcord settings tabs",
+        hidden: true,
+        default: [] as string[]
+    },
+    knownSettingsTabs: {
+        type: OptionType.CUSTOM,
+        description: "Testcord settings tabs the editor has already seen",
         hidden: true,
         default: [] as string[]
     },
@@ -549,8 +601,18 @@ const settings = definePluginSettings({
         description: "Pinned Testcord settings tabs",
         hidden: true,
         default: [] as string[]
+    },
+    experimentalDataStoreExport: {
+        type: OptionType.BOOLEAN,
+        description: "Force export and import of DataStore even when it's too large. Uses chunked processing to avoid memory issues.",
+        default: false
     }
 });
+
+function TestCordDiscordIcon({ original }: { original: any; }) {
+    const { useTestcordIcon } = useSettings(["useTestcordIcon"]);
+    return useTestcordIcon ? <TestCordIcon size={35} /> : original;
+}
 
 export default definePlugin({
     name: "Settings",
@@ -564,16 +626,16 @@ export default definePlugin({
     patches: [
         {
             find: "#{intl::COPY_VERSION}",
+            noWarn: true,
             replacement: [
                 {
                     match: /\.RELEASE_CHANNEL/,
                     replace: "$&.replace(/^./, c => c.toUpperCase())"
                 },
                 {
-                    match: /"text-xxs\/normal".{0,300}?(?=null!=(\i)&&(.{0,20}\i\.\i.{0,200}?,children:).{0,15}?("span"),({className:\i\.\i,children:\["Build Override: ",\1\.id\]\})\)\}\))/,
-                    replace: (m, _buildOverride, makeRow, component, props) => {
-                        props = props.replace(/children:\[.+\]/, "");
-                        return `${m},$self.makeInfoElements(${component},${props}).map(e=>${makeRow}e})),`;
+                    match: /"text-xxs\/normal".{0,300}?(?=null!=(\i)&&(.{0,20}\i\.\i.{0,200}?,children:).{0,15}?("span"),{className:(\i\.\i),children:\["Build Override: ",\1\.id,\i\]\}\)\}\))/,
+                    replace: (m, _buildOverride, makeRow, component, className) => {
+                        return `${m},$self.makeInfoElements(${component},${className}).map(e=>${makeRow}e})),`;
                     }
                 },
                 {
@@ -584,9 +646,18 @@ export default definePlugin({
         },
         {
             find: ".buildLayout().map",
+            noWarn: true,
             replacement: {
                 match: /(\i)\.buildLayout\(\)(?=\.map)/,
                 replace: "$self.buildLayout($1)"
+            }
+        },
+        {
+            find: "#{intl::DISCODO_DISABLED}",
+            noWarn: true,
+            replacement: {
+                match: /(?<=BUTTON_HOME.{0,10}children:)(\(0,\i.jsxs?\)\(\i,{}\))/,
+                replace: "$self.renderDiscordIcon($1)"
             }
         }
     ],
@@ -614,7 +685,7 @@ export default definePlugin({
             key,
             type: LayoutTypes.SIDEBAR_ITEM,
             useTitle: () => title,
-            icon: () => <Icon width={20} height={20} />,
+            icon: Icon ? () => <Icon width={20} height={20} /> : undefined,
             buildLayout: () => [panel]
         });
     },
@@ -623,45 +694,53 @@ export default definePlugin({
         const layout = originalLayoutBuilder.buildLayout();
         if (originalLayoutBuilder.key !== "$Root") return layout;
         if (!Array.isArray(layout)) return layout;
-        if (layout.some(s => s?.key === "equicord_section")) return layout;
+        if (layout.some(s => s?.key === "testcord_section")) return layout;
 
         const { buildEntry } = this;
 
-        const equicordEntries: SettingsLayoutNode[] = [
+        const testcordEntries: SettingsLayoutNode[] = [
             buildEntry({
                 key: TESTCORD_MAIN_ENTRY_KEY,
                 title: "Testcord",
                 panelTitle: "Testcord Settings",
                 Component: () => <>
                     <TestcordTabsEditor
-                        tabs={getTestcordTabDescriptors(equicordEntries)}
+                        tabs={getTestcordTabDescriptors(testcordEntries)}
                     />
                     <VencordTab />
                 </>,
                 Icon: TestCordIcon as any
             }),
             buildEntry({
-                key: "equicord_plugins",
+                key: "testcord_privacy_security",
+                title: "Privacy & Security",
+                panelTitle: "Privacy & Security",
+                Component: PrivacySecurityPanel,
+                Icon: SafetyIcon
+            }),
+            buildEntry({
+                key: "testcord_plugins",
                 title: "Plugins",
                 Component: PluginsTab,
                 Icon: PluginsIcon
             }),
             buildEntry({
-                key: "equicord_themes",
+                key: "testcord_themes",
                 title: "Themes",
                 Component: ThemesTab,
                 Icon: PaintbrushIcon
             }),
             !IS_UPDATER_DISABLED && UpdaterTab && buildEntry({
-                key: "equicord_updater",
+                key: "testcord_updater",
                 title: "Updater",
                 panelTitle: "TestCord Updater",
                 Component: UpdaterTab,
                 Icon: UpdaterIcon
             }),
             buildEntry({
-                key: "equicord_changelog",
+                key: "testcord_changelog",
                 title: "Changelog",
+                panelTitle: "TestCord Changelog",
                 Component: ChangelogTab,
                 Icon: LogIcon,
             }),
@@ -687,20 +766,20 @@ export default definePlugin({
                 Icon: BookmarkIcon,
             }),
             buildEntry({
-                key: "equicord_cloud",
+                key: "testcord_cloud",
                 title: "Cloud",
-                panelTitle: "Equicord Cloud",
+                panelTitle: "testcord Cloud",
                 Component: CloudTab,
                 Icon: CloudIcon
             }),
             buildEntry({
-                key: "equicord_backup_restore",
+                key: "testcord_backup_restore",
                 title: "Backup & Restore",
                 Component: BackupAndRestoreTab,
                 Icon: BackupRestoreIcon
             }),
             !IS_STANDALONE && PatchHelperTab && buildEntry({
-                key: "equicord_patch_helper",
+                key: "testcord_patch_helper",
                 title: "Patch Helper",
                 Component: PatchHelperTab,
                 Icon: PatchHelperIcon
@@ -708,22 +787,22 @@ export default definePlugin({
             ...this.customEntries.map(buildEntry)
         ].filter(isTruthy);
 
-        const orderedEquicordEntries = orderTestcordTabs(
-            equicordEntries,
-            readTestcordTabOrder(equicordEntries.map(entry => entry.key!)),
-            readPinnedTestcordTabs(equicordEntries.map(entry => entry.key!))
+        const orderedTestcordEntries = orderTestcordTabs(
+            testcordEntries,
+            readTestcordTabOrder(testcordEntries.map(entry => entry.key!)),
+            readPinnedTestcordTabs(testcordEntries.map(entry => entry.key!))
         );
 
         syncVisibleTestcordSidebarTabs(
-            getTestcordTabDescriptors(equicordEntries),
-            readVisibleTestcordTabs(equicordEntries.map(entry => entry.key!))
+            getTestcordTabDescriptors(testcordEntries),
+            readVisibleTestcordTabs(testcordEntries.map(entry => entry.key!))
         );
 
-        const equicordSection: SettingsLayoutNode = {
-            key: "equicord_section",
+        const testcordSection: SettingsLayoutNode = {
+            key: "testcord_section",
             type: LayoutTypes.SECTION,
             useTitle: () => "TestCord Settings",
-            buildLayout: () => orderedEquicordEntries
+            buildLayout: () => orderedTestcordEntries
         };
 
         const { settingsLocation } = settings.store;
@@ -746,7 +825,7 @@ export default definePlugin({
             idx += 1;
         }
 
-        layout.splice(idx, 0, equicordSection);
+        layout.splice(idx, 0, testcordSection);
 
         return layout;
     },
@@ -801,14 +880,13 @@ export default definePlugin({
         return "\n" + this.getInfoRows().join("\n");
     },
 
-    makeInfoElements(
-        Component: ComponentType<React.PropsWithChildren>,
-        props: PropsWithChildren,
-    ) {
-        return this.getInfoRows().map((text, i) => (
-            <Component key={i} {...props}>
-                {text}
-            </Component>
-        ));
+    makeInfoElements(Component: ComponentType<PropsWithChildren<{ className?: string; }>>, className: string) {
+        return this.getInfoRows().map((text, i) =>
+            <Component key={i} className={className}>{text}</Component>
+        );
+    },
+
+    renderDiscordIcon(originalIcon: any) {
+        return <TestCordDiscordIcon original={originalIcon} />;
     },
 });

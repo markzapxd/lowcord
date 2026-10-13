@@ -17,8 +17,7 @@
 */
 
 import { Settings } from "@api/Settings";
-import { findStoreLazy } from "@webpack";
-import { ChannelStore, SelectedChannelStore, UserStore } from "@webpack/common";
+import { ChannelStore, SelectedChannelStore, UserGuildSettingsStore, UserStore } from "@webpack/common";
 
 import { settings } from "../index";
 import { LoggedMessageJSON } from "../types";
@@ -73,9 +72,11 @@ export function reAddDeletedMessages(messages: LoggedMessageJSON[], deletedMessa
     const toInsert: LoggedMessageJSON[] = [];
     for (let i = lowestIDX; i <= highestIDX; i++) {
         const entry = savedIDs[i];
-        if (entry?.message && !existingIds.has(entry.id)) {
-            toInsert.push(entry.message);
-        }
+        if (!entry?.message || typeof entry.message !== "object" || !entry.message.id) continue;
+        if (existingIds.has(entry.id)) continue;
+        // Ensure the message we re-insert is a valid object Discord can handle (must have at least id, and flags if present must be number)
+        if (typeof entry.message !== "object") continue;
+        toInsert.push(entry.message);
     }
     if (!toInsert.length) return;
 
@@ -106,8 +107,6 @@ interface ShouldIgnoreArguments {
 }
 
 const EPHEMERAL = 64;
-
-const UserGuildSettingsStore = findStoreLazy("UserGuildSettingsStore");
 
 /**
   * the function `shouldIgnore` evaluates whether a message should be ignored or kept, following a priority hierarchy: User > Channel > Server.
@@ -163,8 +162,8 @@ export function shouldIgnore({ channelId, authorId, guildId, flags, bot, ghostPi
     if (isCachedByUs && (!settings.store.cacheMessagesFromServers && guildId != null && !isGuildWhitelisted)) return true;
     if (isBlacklisted && (!isAuthorWhitelisted || !isChannelWhitelisted)) return true;
     if (guildId != null && settings.store.ignoreMutedGuilds && UserGuildSettingsStore.isMuted(guildId)) return true;
-    if (channelId != null && settings.store.ignoreMutedCategories && UserGuildSettingsStore.isCategoryMuted(guildId, channelId)) return true;
-    if (channelId != null && settings.store.ignoreMutedChannels && UserGuildSettingsStore.isChannelMuted(guildId, channelId)) return true;
+    if (channelId != null && guildId != null && settings.store.ignoreMutedCategories && UserGuildSettingsStore.isCategoryMuted(guildId, channelId)) return true;
+    if (channelId != null && guildId != null && settings.store.ignoreMutedChannels && UserGuildSettingsStore.isChannelMuted(guildId, channelId)) return true;
 
     return false;
 }

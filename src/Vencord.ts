@@ -20,6 +20,8 @@
 import "~plugins";
 import "./fixWeirdAppRegionBug.css";
 
+import nativeTitleBarStyles from "./nativeTitleBar.css?managed";
+
 export * as Api from "./api";
 export * as Plugins from "./api/PluginManager";
 export * as Components from "./components";
@@ -29,12 +31,10 @@ export * as Webpack from "./webpack";
 export * as WebpackPatcher from "./webpack/patchWebpack";
 export { PlainSettings, Settings };
 
-import { coreStyleRootNode, initStyles } from "@api/Styles";
+import { enableStyle, initStyles } from "@api/Styles";
 import { openSettingsTabModal, UpdaterTab } from "@components/settings";
 import { openUpdateAvailableModal } from "@components/UpdateAvailableModal";
 import { debounce } from "@shared/debounce";
-import { IS_WINDOWS } from "@utils/constants";
-import { createAndAppendStyle } from "@utils/css";
 import { StartAt } from "@utils/types";
 import { SettingsRouter } from "@webpack/common";
 
@@ -42,13 +42,12 @@ import { get as dsGet } from "./api/DataStore";
 import { popNotice, showNotice } from "./api/Notices";
 import { NotificationData, showNotification } from "./api/Notifications";
 import { PatchVersioning } from "./api/PatchVersioning";
-import { PluginHealth } from "./api/PluginHealth";
 import { initPluginManager, PMLogger, startAllPlugins } from "./api/PluginManager";
 import { PlainSettings, Settings, SettingsStore } from "./api/Settings";
 import { areLocalSettingsDirty, getCloudSettings, getCloudSyncDirection, markLocalSettingsDirty, putCloudSettings, shouldCloudSync } from "./api/SettingsSync/cloudSync";
 import { relaunch } from "./utils/native";
 import { changes, checkForUpdates, isOutdated as getIsOutdated, update, UpdateLogger } from "./utils/updater";
-import { addFactoryListener,onceReady, wreq } from "./webpack";
+import { onceReady } from "./webpack";
 import { patches } from "./webpack/patchWebpack";
 
 if (IS_REPORTER) {
@@ -64,7 +63,7 @@ async function syncSettings() {
                 title: "Cloud Settings",
                 body: "Cloud sync was disabled because this account isn't connected to the cloud App. You can enable it again by connecting this account in Cloud Settings. (note: it will store your preferences separately)",
                 color: "var(--yellow-360)",
-                onClick: () => SettingsRouter.openUserSettings("equicord_cloud_panel")
+                onClick: () => SettingsRouter.openUserSettings("testcord_cloud_panel")
             });
             // Disable cloud sync globally
             Settings.cloud.authenticated = false;
@@ -83,7 +82,8 @@ async function syncSettings() {
             body: "We've noticed you have cloud integrations enabled in another client! Due to limitations, you will " +
                 "need to re-authenticate to continue using them. Click here to go to the settings page to do so!",
             color: "var(--yellow-360)",
-            onClick: () => SettingsRouter.openUserSettings("equicord_cloud_panel")
+            onClick: () => SettingsRouter.openUserSettings("testcord_cloud_panel"),
+            noPersist: true
         });
         return;
     }
@@ -143,7 +143,15 @@ async function runUpdateCheck() {
         if (!isOutdated) return;
 
         if (Settings.autoUpdate) {
-            await update();
+            // only claim success when the rebuild actually happened. update()
+            // returns false when it refused to touch the working tree
+            // (diverged) or the build failed.
+            const updated = await update();
+            if (!updated) {
+                UpdateLogger.error("Automatic update did not complete; leaving the local copy untouched");
+                return;
+            }
+
             if (Settings.autoUpdateNotification) {
                 if (notifiedForUpdatesThisSession) return;
                 notifiedForUpdatesThisSession = true;
@@ -165,12 +173,12 @@ async function runUpdateCheck() {
 
         openUpdateAvailableModal({
             commits: changes,
-            title: "TestCord has updated!",
+            title: "A TestCord update is available!",
             confirmText: "View Updates",
             onConfirm: () => openSettingsTabModal(UpdaterTab!),
             onUpdate: async () => {
-                await update();
-                relaunch();
+                // don't relaunch on a declined or failed update
+                if (await update()) relaunch();
             }
         });
     } catch (err) {
@@ -218,8 +226,13 @@ async function init() {
     if (!IS_DEV && !IS_WEB && !IS_UPDATER_DISABLED) {
         runUpdateCheck();
 
-        // this tends to get really annoying, so only do this if the user has auto-update without notification enabled
-        if (Settings.autoUpdate && !Settings.autoUpdateNotification) {
+        // The periodic re-check exists to catch commits pushed while the app is
+        // already running. The old gate was `autoUpdate &&
+        // !autoUpdateNotification`, which only polled for users who had opted
+        // out of being told about updates -- the exact users least likely to
+        // notice a silent update. Poll whenever auto-update is enabled; the
+        // once-per-session notification guard keeps it from nagging.
+        if (Settings.autoUpdate) {
             setInterval(runUpdateCheck, 1000 * 60 * 30); // 30 minutes
         }
     }
@@ -241,151 +254,6 @@ async function init() {
     // when Discord updates the underlying code for a patched module.
     void PatchVersioning.init();
 
-    // Delayed scan for patches that never matched any loaded module.
-    //
-    // Instead of blindly flagging every unresolved patch as "broken", we
-    // search Discord's complete factory map (wreq.m) — which contains the
-    // source code of EVERY module, loaded or not — to distinguish:
-    //
-    //   1. "lazy" — the find string IS in some factory's source, so the
-    //      module exists in the bundle but hasn't been instantiated yet.
-    //      This is normal: Discord lazy-loads emoji picker, settings panels,
-    //      voice UI, etc. We do NOT flag these.
-    //
-    //   2. "missing" — the find string is NOT in any factory's source, so
-    //      Discord removed or renamed the module. This is a genuine breakage
-    //      that the user should know about. We flag these as "noModule".
-    setTimeout(() => {
-        if (!wreq?.m) return;
-
-        // Build a single concatenated source string once, rather than calling
-        // .toString() on each factory individually per patch (which would be
-        // O(patches × factories) string operations).
-        // The bundle is typically 5–15 MB of source — this is fine for a
-        // one-time deferred scan.
-        let allFactorySource: string | null = null;
-        const getFactorySource = () => {
-            if (allFactorySource !== null) return allFactorySource;
-            const parts: string[] = [];
-            for (const id in wreq.m) {
-                try {
-                    parts.push(String(wreq.m[id]));
-                } catch {
-                    // Some factories may throw on toString — skip them.
-                }
-            }
-            allFactorySource = parts.join("\n");
-            return allFactorySource;
-        };
-
-        const noModulePlugins = new Set<string>();
-
-        // Track which patches were flagged as noModule so we can re-check
-        // them when Discord lazy-loads additional chunks later.
-        const noModulePatches: Array<{ plugin: string; find: string | RegExp; findStr: string; }> = [];
-
-        for (const patch of patches) {
-            if (patch.all) continue;
-            if (patch.predicate && patch.predicate() === false) continue;
-
-            const findStr = String(patch.find);
-
-            // Check whether the find string exists anywhere in the bundle's
-            // factory source code. If it does, the module is lazy-loaded and
-            // will be patched when the user opens the relevant UI — not a
-            // real failure.
-            const source = getFactorySource();
-            let isInBundle = false;
-            if (patch.find instanceof RegExp) {
-                if (patch.find.global) patch.find.lastIndex = 0;
-                isInBundle = patch.find.test(source);
-            } else {
-                isInBundle = source.includes(findStr);
-            }
-
-            if (isInBundle) continue;
-
-            PluginHealth.recordPatchFailure(patch.plugin, {
-                kind: "noModule",
-                find: findStr
-            });
-            noModulePlugins.add(patch.plugin);
-            noModulePatches.push({
-                plugin: patch.plugin,
-                find: patch.find,
-                findStr
-            });
-        }
-
-        // Register a factory listener that checks newly loaded factories
-        // against the noModule entries. When Discord lazy-loads a chunk
-        // that contains a previously "missing" module, the false positive
-        // is automatically cleared.
-        if (noModulePatches.length > 0) {
-            const removeListener = addFactoryListener(factory => {
-                let factorySource: string;
-                try {
-                    factorySource = String(factory);
-                } catch {
-                    return;
-                }
-
-                for (let i = noModulePatches.length - 1; i >= 0; i--) {
-                    const { plugin, find, findStr } = noModulePatches[i];
-                    let matches = false;
-                    if (find instanceof RegExp) {
-                        if (find.global) find.lastIndex = 0;
-                        matches = find.test(factorySource);
-                    } else {
-                        matches = factorySource.includes(findStr);
-                    }
-
-                    if (matches) {
-                        PluginHealth.clearPatchFailures(
-                            plugin,
-                            f => f.kind === "noModule" && f.find === findStr
-                        );
-                        noModulePatches.splice(i, 1);
-                        if (!noModulePatches.some(patch => patch.plugin === plugin)) {
-                            noModulePlugins.delete(plugin);
-                        }
-                    }
-                }
-
-                if (noModulePatches.length === 0) {
-                    removeListener();
-                }
-            });
-        }
-
-        // Discord update detection: if 3+ plugins have missing modules
-        // with real code-level find strings (not CSS class hashes or intl
-        // keys from lazy-loaded chunks), it's very likely Discord shipped
-        // an update that broke things.
-        // Show a one-time notice pointing the user to the Health tab.
-        // Check if the user has dismissed this notice permanently.
-        const realNoModulePlugins = [...noModulePlugins].filter(p =>
-            noModulePatches.some(patch =>
-                patch.plugin === p
-                && !patch.findStr.startsWith(".")
-                && !patch.findStr.startsWith("[\"")
-            )
-        );
-        if (realNoModulePlugins.length >= 3) {
-            void dsGet<boolean>("PluginHealthNoticeDismissed_v1").then(dismissed => {
-                if (!dismissed) {
-                    showNotice(
-                        `Discord may have updated — ${realNoModulePlugins.length} plugins have missing modules. Check the Plugin Health tab for details.`,
-                        "View Health",
-                        () => {
-                            SettingsRouter.openUserSettings("testcord_health_panel");
-                        }
-                    );
-                }
-            });
-        }
-    }, 60_000);
-
     // Defer non-critical IPC init to not block the critical startup path
     setTimeout(initTrayIpc, 0);
 }
@@ -403,15 +271,82 @@ if (!IS_DEV) {
     });
 }
 
+function initNotificationSafeguard() {
+    if (typeof window === "undefined") return;
+
+    if (window.Notification && !(window.Notification as any)._safePatched) {
+        const OrigNotification = window.Notification;
+        const SafeNotification = function (title: string, options?: NotificationOptions) {
+            const safeTitle = typeof title === "string" ? title : (title == null ? "" : String(title));
+            const safeOptions = options ? { ...options } : {};
+            if ("body" in safeOptions) {
+                safeOptions.body = typeof safeOptions.body === "string" ? safeOptions.body : (safeOptions.body == null ? "" : String(safeOptions.body));
+            }
+            return new OrigNotification(safeTitle, safeOptions);
+        } as any;
+        SafeNotification.prototype = OrigNotification.prototype;
+        SafeNotification.permission = OrigNotification.permission;
+        SafeNotification.requestPermission = OrigNotification.requestPermission ? OrigNotification.requestPermission.bind(OrigNotification) : undefined;
+        SafeNotification._safePatched = true;
+        try {
+            window.Notification = SafeNotification;
+        } catch {}
+    }
+
+    const patchDiscordNative = () => {
+        try {
+            const dn = (window as any).DiscordNative;
+            if (dn?.notifications?.sendNotification && !dn.notifications._safePatched) {
+                const origSend = dn.notifications.sendNotification.bind(dn.notifications);
+                dn.notifications.sendNotification = function (opts: any, ...rest: any[]) {
+                    if (opts && typeof opts === "object") {
+                        if ("title" in opts && typeof opts.title !== "string") {
+                            opts.title = opts.title == null ? "" : String(opts.title);
+                        }
+                        if ("body" in opts && typeof opts.body !== "string") {
+                            opts.body = opts.body == null ? "" : String(opts.body);
+                        }
+                        if ("text" in opts && typeof opts.text !== "string") {
+                            opts.text = opts.text == null ? "" : String(opts.text);
+                        }
+                    }
+                    return origSend(opts, ...rest);
+                };
+                dn.notifications._safePatched = true;
+            }
+        } catch {}
+    };
+
+    patchDiscordNative();
+    setTimeout(patchDiscordNative, 500);
+}
+
+initNotificationSafeguard();
 initStyles();
 startAllPlugins(StartAt.Init);
 init();
 
+window.addEventListener("keydown", e => {
+    const isCtrl = e.ctrlKey || e.metaKey;
+    const key = e.key?.toLowerCase();
+    if ((isCtrl && e.shiftKey && key === "i") || (isCtrl && e.altKey && key === "i") || key === "f12") {
+        try {
+            const winApi = (window as any).DiscordNative?.window || (window as any).VencordNative?.window;
+            if (typeof winApi?.openDevTools === "function") {
+                winApi.openDevTools();
+            } else if (typeof winApi?.toggleDevTools === "function") {
+                winApi.toggleDevTools();
+            }
+        } catch (err) {
+            console.error("[TestCord] Failed to open DevTools:", err);
+        }
+    }
+}, true);
+
 document.addEventListener("DOMContentLoaded", () => {
     startAllPlugins(StartAt.DOMContentLoaded);
 
-    // FIXME
-    if (IS_DISCORD_DESKTOP && Settings.winNativeTitleBar && IS_WINDOWS) {
-        createAndAppendStyle("vencord-native-titlebar-style", coreStyleRootNode).textContent = "[class*=titleBar]{display: none!important}";
+    if (IS_DISCORD_DESKTOP && Settings.nativeTitleBar) {
+        enableStyle(nativeTitleBarStyles);
     }
 }, { once: true });

@@ -11,8 +11,9 @@ import { loadLazyChunks } from "@debug/loadLazyChunks";
 import { reporterData } from "@debug/reporterData";
 import { getIntlMessageFromHash } from "@utils/discord";
 import { canonicalizeMatch, canonicalizeReplace } from "@utils/patches";
+import { ToastPosition } from "@vencord/discord-types/enums";
 import { filters, findAll, search, wreq } from "@webpack";
-import { React, Toasts, useState } from "@webpack/common";
+import { React, showToast, Toasts, useEffect, useState } from "@webpack/common";
 
 import { CLIENT_VERSION, logger, PORT, settings } from ".";
 import { Recieve } from "./types";
@@ -27,6 +28,9 @@ export function stopWs() {
 export let socket: WebSocket | undefined;
 
 export function initWs(isManual = false) {
+    if (socket && socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
+        socket.close(1000, "Reconnecting");
+    }
     let wasConnected = isManual;
     let hasErrored = false;
     const ws = socket = new WebSocket(`ws://127.0.0.1:${PORT}`);
@@ -35,7 +39,7 @@ export function initWs(isManual = false) {
         ws.send(JSON.stringify(data));
     }
 
-    ws.addEventListener("open", () => {
+    ws.onopen = () => {
         wasConnected = true;
 
         logger.info("Connected to WebSocket");
@@ -65,22 +69,17 @@ export function initWs(isManual = false) {
 
         try {
             if (settings.store.notifyOnAutoConnect || isManual) {
-                Toasts.show({
-                    message: "Connected to WebSocket",
-                    id: Toasts.genId(),
-                    type: Toasts.Type.SUCCESS,
-                    options: {
-                        position: Toasts.Position.TOP
-                    }
-                });
+                showToast("Connected to WebSocket", "success", {
+                        position: ToastPosition.TOP
+                    });
             }
         }
         catch (e) {
             console.error(e);
         }
-    });
+    };
 
-    ws.addEventListener("error", e => {
+    ws.onerror = e => {
         if (!wasConnected) return;
 
         hasErrored = true;
@@ -95,9 +94,9 @@ export function initWs(isManual = false) {
                 position: Toasts.Position.TOP
             }
         });
-    });
+    };
 
-    ws.addEventListener("close", e => {
+    ws.onclose = e => {
         if (!wasConnected || hasErrored) return;
 
         logger.info("Dev Companion Disconnected:", e.code, e.reason);
@@ -110,9 +109,9 @@ export function initWs(isManual = false) {
                 position: Toasts.Position.TOP
             }
         });
-    });
+    };
 
-    ws.addEventListener("message", e => {
+    ws.onmessage = e => {
         try {
             var d = JSON.parse(e.data) as Recieve.FullIncomingMessage;
         } catch (err) {
@@ -122,11 +121,24 @@ export function initWs(isManual = false) {
         /**
          * @param error the error to reply with. if there is no error, the reply is a sucess
          */
-        function reply(error?: string) {
-            const toSend = { nonce: d.nonce, ok: !error } as Record<string, unknown>;
-            if (error) toSend.error = error;
+        function replyError(error: string) {
+            const toSend = { nonce: d.nonce, ok: false, error } as Record<string, unknown>;
             logger.debug("Replying with:", toSend);
             ws.send(JSON.stringify(toSend));
+        }
+        function replyOk() {
+            const toSend = {
+                nonce: d.nonce,
+                ok: true,
+                type: "genericOk",
+                data: {},
+            } as Record<string, unknown>;
+            logger.debug("Replying with:", toSend);
+            ws.send(JSON.stringify(toSend));
+        }
+        function reply(error?: string) {
+            if (error) replyError(error);
+            else replyOk();
         }
         function replyData(data: OutgoingMessage) {
             const toSend: FullOutgoingMessage = {
@@ -471,7 +483,7 @@ export function initWs(isManual = false) {
                 reply("Unknown Type " + d?.type);
                 break;
         }
-    });
+    };
 }
 
 interface AllModulesNotiProps {
@@ -481,8 +493,16 @@ interface AllModulesNotiProps {
 
 const AllModulesNoti = ErrorBoundary.wrap(function ({ done, close }: AllModulesNotiProps) {
     const [state, setState] = useState<0 | 1 | -1>(0);
-    done.then(setState.bind(null, 1)).catch(setState.bind(null, -1));
-    if (state === 1) setTimeout(close, 5000);
+    useEffect(() => {
+        let cancelled = false;
+        done.then(() => { if (!cancelled) setState(1); }).catch(() => { if (!cancelled) setState(-1); });
+        return () => { cancelled = true; };
+    }, [done]);
+    useEffect(() => {
+        if (state !== 1) return;
+        const timer = setTimeout(close, 5000);
+        return () => clearTimeout(timer);
+    }, [state, close]);
     return (<>
         {state === 0 && "Loading lazy modules, restarting could lead to errors"}
         {state === 1 && "Loaded all lazy modules"}

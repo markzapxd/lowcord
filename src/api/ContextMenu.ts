@@ -37,6 +37,24 @@ const ContextMenuLogger = new Logger("ContextMenu");
 export const navPatches = new Map<string, Set<NavContextMenuPatchCallback>>();
 export const globalPatches = new Set<GlobalContextMenuPatchCallback>();
 
+/** Callbacks of currently mounted menus, used by {@link refreshContextMenus}. */
+const openMenuListeners = new Set<() => void>();
+
+/**
+ * Re-run the patches of every open context menu. Needed when a patch rendered live data:
+ * Discord re-renders a menu only for its own state changes, and React skips children whose
+ * element reference is unchanged, so such a row would keep showing a stale value.
+ */
+export function refreshContextMenus() {
+    for (const listener of [...openMenuListeners]) {
+        try {
+            listener();
+        } catch (err) {
+            ContextMenuLogger.error("Refresh listener errored,", err);
+        }
+    }
+}
+
 /** Log individual patches slower than this (ms). Only when IS_DEV. */
 const SLOW_PATCH_MS = 2;
 /** Log total patch pass slower than this (ms). Only when IS_DEV. */
@@ -157,10 +175,27 @@ interface MountPatchState {
     patchedChildren: Array<ReactElement<any> | null> | null;
     /** True once a patch pass has completed, i.e. the menu is already on screen. */
     patchedOnce: boolean;
+    /** True when {@link refreshContextMenus} invalidated the fields above. */
+    stale: boolean;
 }
 
 function normalizeChildren(children: ContextMenuProps["children"]): Array<ReactElement<any> | null> {
     return Array.isArray(children) ? children : [children];
+}
+
+function getPatchesForNavId(navId: string): Set<NavContextMenuPatchCallback> | undefined {
+    const direct = navPatches.get(navId);
+    if (navId === "message-actions" || navId === "message") {
+        const messagePatches = navPatches.get("message");
+        const messageActionPatches = navPatches.get("message-actions");
+        if (messagePatches && messageActionPatches) {
+            const combined = new Set(messagePatches);
+            for (const p of messageActionPatches) combined.add(p);
+            return combined;
+        }
+        return messagePatches ?? messageActionPatches ?? direct;
+    }
+    return direct;
 }
 
 function applyAllPatches(
@@ -168,7 +203,7 @@ function applyAllPatches(
     sourceChildren: ContextMenuProps["children"],
     args: Array<any>
 ): Array<ReactElement<any> | null> {
-    const contextMenuPatches = navPatches.get(navId);
+    const contextMenuPatches = getPatchesForNavId(navId);
     const hasPatches = (contextMenuPatches?.size ?? 0) > 0 || globalPatches.size > 0;
 
     let children = hasPatches
@@ -185,13 +220,14 @@ function applyAllPatches(
 
     findCacheChildren = children;
     findCache = new Map();
+    const safeArgs = args && args.length > 0 && args[0] !== undefined ? args : [{}];
     try {
         if (contextMenuPatches?.size) {
             let i = 0;
             for (const patch of contextMenuPatches) {
                 const t0 = timed ? performance.now() : 0;
                 try {
-                    patch(children, ...args);
+                    patch(children, ...safeArgs);
                 } catch (err) {
                     ContextMenuLogger.error(`Patch for ${navId} errored,`, err);
                 }
@@ -208,7 +244,7 @@ function applyAllPatches(
             for (const patch of globalPatches) {
                 const t0 = timed ? performance.now() : 0;
                 try {
-                    patch(navId, children, ...args);
+                    patch(navId, children, ...safeArgs);
                 } catch (err) {
                     ContextMenuLogger.error("Global patch errored,", err);
                 }
@@ -251,14 +287,15 @@ export function _usePatchContextMenu(props: ContextMenuProps) {
     const mountRef = React.useRef<MountPatchState>({
         sourceChildren: null,
         patchedChildren: null,
-        patchedOnce: false
+        patchedOnce: false,
+        stale: false
     });
     const [, forceRender] = React.useReducer((n: number) => n + 1, 0);
 
     props.contextMenuAPIArguments ??= [];
     const args = props.contextMenuAPIArguments;
 
-    const contextMenuPatches = navPatches.get(props.navId);
+    const contextMenuPatches = getPatchesForNavId(props.navId);
     const hasPatches = (contextMenuPatches?.size ?? 0) > 0 || globalPatches.size > 0;
 
     React.useEffect(() => {
@@ -273,17 +310,31 @@ export function _usePatchContextMenu(props: ContextMenuProps) {
             state.patchedChildren = applyAllPatches(props.navId, props.children, args);
             state.sourceChildren = props.children;
             state.patchedOnce = true;
+            state.stale = false;
             forceRender();
         } catch (err) {
             ContextMenuLogger.error(`Deferred patch for ${props.navId} failed,`, err);
         }
     }, [props.navId, props.children, hasPatches]);
 
+    React.useEffect(() => {
+        if (!hasPatches) return;
+
+        const listener = () => {
+            // Force the inline patch path on the next render so the children are rebuilt.
+            mountRef.current.stale = true;
+            forceRender();
+        };
+
+        openMenuListeners.add(listener);
+        return () => { openMenuListeners.delete(listener); };
+    }, [hasPatches]);
+
     if (!Menu.MenuItem) return props; // Prevent crashes if menu items failed to resolve
 
     const state = mountRef.current;
 
-    if (state.patchedChildren && state.sourceChildren === props.children) {
+    if (!state.stale && state.patchedChildren && state.sourceChildren === props.children) {
         return { ...props, children: state.patchedChildren };
     }
 
@@ -291,6 +342,7 @@ export function _usePatchContextMenu(props: ContextMenuProps) {
         const children = normalizeChildren(props.children);
         state.sourceChildren = props.children;
         state.patchedChildren = children;
+        state.stale = false;
         return { ...props, children };
     }
 
@@ -300,6 +352,7 @@ export function _usePatchContextMenu(props: ContextMenuProps) {
         const children = applyAllPatches(props.navId, props.children, args);
         state.sourceChildren = props.children;
         state.patchedChildren = children;
+        state.stale = false;
         return { ...props, children };
     }
 

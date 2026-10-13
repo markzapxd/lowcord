@@ -16,15 +16,24 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+import "./MessagePopover.css";
+
 import ErrorBoundary from "@components/ErrorBoundary";
+import { ChevronSmallLeftIcon, ChevronSmallRightIcon } from "@components/Icons";
 import { Logger } from "@utils/Logger";
+import { classes } from "@utils/misc";
 import { IconComponent } from "@utils/types";
 import { Channel, Message } from "@vencord/discord-types";
-import type { ComponentType, MouseEventHandler } from "react";
+import { findCssClassesLazy } from "@webpack";
+import { Clickable, useEffect, useLayoutEffect, useMemo, useRef, useState } from "@webpack/common";
+import type { ComponentType, MouseEventHandler, ReactNode } from "react";
 
-import { useSettings } from "./Settings";
+import { SettingsStore, useSettings } from "./Settings";
 
 const logger = new Logger("MessagePopover");
+
+const ToolbarClasses = findCssClassesLazy("wrapper", "button", "selected", "separator", "disabled", "dangerous");
+const HoverBarClasses = findCssClassesLazy("popover", "hoverBarButton", "icon", "buttonContent");
 
 export interface MessagePopoverButtonItem {
     key?: string,
@@ -32,8 +41,10 @@ export interface MessagePopoverButtonItem {
     icon: ComponentType<any>,
     message: Message,
     channel: Channel,
-    onClick?: MouseEventHandler<HTMLButtonElement>,
-    onContextMenu?: MouseEventHandler<HTMLButtonElement>;
+    // HTMLElement: the button is Discord's on a native build and a Clickable div on
+    // the fallback path, and these handlers never touch the event target type.
+    onClick?: MouseEventHandler<HTMLElement>,
+    onContextMenu?: MouseEventHandler<HTMLElement>;
 }
 
 export type MessagePopoverButtonFactory = (message: Message) => MessagePopoverButtonItem | null;
@@ -75,39 +86,133 @@ export function _captureToolbarButton(comp: any) {
     return _capturedToolbarButton;
 }
 
-function VencordPopoverButtons(props: { message: Message }) {
-    const { message } = props;
+function VencordPopoverButtons(props: { Component?: React.ComponentType<MessagePopoverButtonItem> | null; message: Message; }) {
+    const { Component, message } = props;
 
     const { messagePopoverButtons } = useSettings(["uiElements.messagePopoverButtons.*"]).uiElements;
 
-    const elements: React.ReactNode[] = [];
-    for (const [key, { render }] of MessagePopoverButtonMap) {
-        if (messagePopoverButtons[key]?.enabled === false) continue;
-        try {
-            const item = render(message);
-            if (!item) continue;
+    // Same rationale as the chat bar row: the popover re-renders on every
+    // hover, re-running all factories each time. Skip when nothing a factory
+    // consumes changed. Factories only get the message; live data flows
+    // through their own hooks/subscriptions.
+    const [settingsTick, setSettingsTick] = useState(0);
+    useEffect(() => {
+        const listener = () => setSettingsTick(t => t + 1);
+        SettingsStore.addGlobalChangeListener(listener);
+        return () => SettingsStore.removeGlobalChangeListener(listener);
+    }, []);
 
-            const ButtonComponent = _capturedToolbarButton as React.ComponentType<MessagePopoverButtonItem> | null;
-
-            elements.push(
-                <ErrorBoundary noop key={key}>
-                    {ButtonComponent
-                        ? <ButtonComponent {...item} />
-                        : <item.icon width={16} height={16} />
-                    }
-                </ErrorBoundary>
-            );
-        } catch (err) {
-            logger.error(`[${key}]`, err);
+    const enabledKey = (() => {
+        let key = "";
+        for (const [mapKey] of MessagePopoverButtonMap) {
+            if (messagePopoverButtons[mapKey]?.enabled !== false) key += mapKey + ",";
         }
-    }
+        return key;
+    })();
 
-    return <>{elements}</>;
+    const elements = useMemo(() => {
+        const nodes: React.ReactNode[] = [];
+        for (const [key, { render }] of MessagePopoverButtonMap) {
+            if (messagePopoverButtons[key]?.enabled !== false) {
+                try {
+                    const item = render(message);
+                    if (!item) continue;
+
+                    const ButtonComponent = (Component ?? _capturedToolbarButton) as React.ComponentType<MessagePopoverButtonItem> | null;
+
+                    nodes.push(
+                        <ErrorBoundary noop key={key}>
+                            {ButtonComponent
+                                ? <ButtonComponent {...item} />
+                                // The captured toolbar button is only wired up when the
+                                // capturing patch matches. Fall back to Discord's own
+                                // hover-bar button styling instead of a bare icon, which
+                                // renders unstyled and squashed in the toolbar row.
+                                : <Clickable
+                                    className={classes(ToolbarClasses.button, HoverBarClasses.hoverBarButton)}
+                                    onClick={item.onClick}
+                                    onContextMenu={item.onContextMenu}
+                                    aria-label={item.label}
+                                >
+                                    <item.icon className={HoverBarClasses.icon} width={16} height={16} />
+                                </Clickable>
+                            }
+                        </ErrorBoundary>
+                    );
+                } catch (err) {
+                    logger.error(`[${key}]`, err);
+                }
+            }
+        }
+        return nodes;
+    }, [Component, message.id, message.editedTimestamp, message.channel_id, enabledKey, settingsTick, _capturedToolbarButton ? 1 : 0]);
+
+    // The overflow scroller lives here rather than only in the messagePopover patch
+    // so the bar stays usable even when that patch fails to match Discord's build.
+    return <PopoverOverflow>{elements}</PopoverOverflow>;
+}
+
+function OverflowArrow({ direction, onClick }: { direction: "left" | "right", onClick(): void; }) {
+    const Icon = direction === "left" ? ChevronSmallLeftIcon : ChevronSmallRightIcon;
+
+    return (
+        <div className={`vc-popover-overflow-arrow vc-popover-overflow-arrow-${direction}`}>
+            <Clickable
+                className={classes(ToolbarClasses.button, HoverBarClasses.hoverBarButton)}
+                onClick={onClick}
+                aria-label={direction === "left" ? "Scroll left" : "Scroll right"}
+            >
+                <Icon className={HoverBarClasses.icon} />
+            </Clickable>
+        </div>
+    );
+}
+
+function PopoverOverflow({ children }: { children: ReactNode; }) {
+    const scrollerRef = useRef<HTMLDivElement>(null);
+
+    useLayoutEffect(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller) return;
+        scroller.scrollLeft = scroller.scrollWidth;
+
+        const onWheel = (e: WheelEvent) => {
+            if (scroller.scrollWidth <= scroller.clientWidth) return;
+            e.preventDefault();
+            const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+            scroller.scrollLeft += e.deltaMode === WheelEvent.DOM_DELTA_LINE ? delta * 16 : delta;
+        };
+        scroller.addEventListener("wheel", onWheel, { passive: false });
+        return () => scroller.removeEventListener("wheel", onWheel);
+    }, []);
+
+    const scroll = (direction: 1 | -1) => {
+        const scroller = scrollerRef.current;
+        scroller?.scrollBy({ left: direction * scroller.clientWidth * 0.75, behavior: "smooth" });
+    };
+
+    return (
+        <div ref={scrollerRef} className="vc-popover-overflow">
+            <div className="vc-popover-overflow-track">
+                <OverflowArrow direction="left" onClick={() => scroll(-1)} />
+                {children}
+                <OverflowArrow direction="right" onClick={() => scroll(1)} />
+            </div>
+        </div>
+    );
+}
+
+export function _wrapPopoverBar(children: ReactNode[]) {
+    return (
+        <ErrorBoundary fallback={() => <>{...children}</>}>
+            <PopoverOverflow>{...children}</PopoverOverflow>
+        </ErrorBoundary>
+    );
 }
 
 export function _buildPopoverElements(
     Component: React.ComponentType<MessagePopoverButtonItem> | null,
     message: Message
 ) {
-    return <VencordPopoverButtons message={message} />;
+    return <VencordPopoverButtons Component={Component} message={message} />;
 }

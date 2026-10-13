@@ -4,13 +4,15 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import * as DataStore from "@api/DataStore";
 import { CACHED_MESSAGES_MAX } from "@utils/cacheLimits";
-import { ChannelStore, Toasts } from "@webpack/common";
+import { Logger } from "@utils/Logger";
+import { ChannelStore, showToast } from "@webpack/common";
 import { DBSchema, IDBPDatabase, openDB } from "idb";
 
 import { LoggedMessageJSON } from "./types";
 import { getMessageStatus } from "./utils";
-import { stripTransientRenderState } from "./utils/cleanUp";
+import { sanitizeForIDB, stripTransientRenderState } from "./utils/cleanUp";
 import { DB_NAME, DB_VERSION } from "./utils/constants";
 import { getAttachmentBlobUrl } from "./utils/saveImage";
 
@@ -85,7 +87,7 @@ export async function initIDB() {
         }
     });
 }
-initIDB();
+initIDB().then(() => migrateDateTimestamps());
 
 export async function hasMessageIDB(message_id: string) {
     return cachedMessages.has(message_id) || (await db.count("messages", message_id)) > 0;
@@ -182,7 +184,6 @@ export async function getDateStortedMessagesByStatusIDB(newest: boolean, limit: 
     const cursor = await index.openCursor(IDBKeyRange.only(status), direction);
 
     if (!cursor) {
-        console.log("No messages found");
         return [];
     }
 
@@ -203,7 +204,6 @@ export async function getMessagesByChannelAndAfterTimestampIDB(channel_id: strin
     const cursor = await index.openCursor(IDBKeyRange.bound([channel_id, start], [channel_id, "\uffff"]));
 
     if (!cursor) {
-        console.log("No messages found in range");
         return [];
     }
 
@@ -216,36 +216,84 @@ export async function getMessagesByChannelAndAfterTimestampIDB(channel_id: strin
 }
 
 export async function addMessageIDB(message: LoggedMessageJSON, status: DBMessageStatus) {
-    stripTransientRenderState(message);
+    try {
+        stripTransientRenderState(message);
+        const sanitized = sanitizeForIDB(message);
+        if (typeof sanitized.timestamp !== "string")
+            sanitized.timestamp = (sanitized.timestamp as Date | string) ? new Date(sanitized.timestamp).toISOString() : new Date().toISOString();
 
-    if (!db) await initIDB();
-    await db.put("messages", {
-        channel_id: message.channel_id,
-        message_id: message.id,
-        status,
-        message,
-    });
+        if (!db) await initIDB();
+        await db.put("messages", {
+            channel_id: sanitized.channel_id,
+            message_id: sanitized.id,
+            status,
+            message: sanitized,
+        });
 
-    cachedMessages.set(message.id, message);
+        cachedMessages.set(sanitized.id, sanitized);
+    } catch (e) {
+        console.error("[MessageLoggerEnhanced] Failed to save message to IDB:", e);
+    }
 }
 
 export async function addMessagesBulkIDB(messages: LoggedMessageJSON[], status?: DBMessageStatus) {
-    messages.forEach(stripTransientRenderState);
+    try {
+        const sanitizedMessages = messages.map(message => {
+            stripTransientRenderState(message);
+            const sanitized = sanitizeForIDB(message);
+            if (typeof sanitized.timestamp !== "string")
+                sanitized.timestamp = (sanitized.timestamp as Date | string) ? new Date(sanitized.timestamp).toISOString() : new Date().toISOString();
+            return sanitized;
+        });
 
-    const tx = db.transaction("messages", "readwrite");
-    const { store } = tx;
+        if (!db) await initIDB();
+        const tx = db.transaction("messages", "readwrite");
+        const { store } = tx;
 
-    await Promise.all([
-        ...messages.map(message => store.put({
-            channel_id: message.channel_id,
-            message_id: message.id,
-            status: status ?? getMessageStatus(message),
-            message,
-        })),
-        tx.done
-    ]);
+        await Promise.all([
+            ...sanitizedMessages.map(message => store.put({
+                channel_id: message.channel_id,
+                message_id: message.id,
+                status: status ?? getMessageStatus(message),
+                message,
+            })),
+            tx.done
+        ]);
 
-    messages.forEach(message => cachedMessages.set(message.id, message));
+        sanitizedMessages.forEach(message => cachedMessages.set(message.id, message));
+    } catch (e) {
+        console.error("[MessageLoggerEnhanced] Failed to bulk save messages to IDB:", e);
+    }
+}
+
+const TIMESTAMP_MIGRATION_KEY = "MessageLoggerEnhanced_timestampMigration";
+
+export async function migrateDateTimestamps() {
+    if (!db) await initIDB();
+    if (await DataStore.get(TIMESTAMP_MIGRATION_KEY)) return;
+
+    try {
+        const keys = await db.getAllKeys("messages");
+        let migrated = 0;
+        for (let i = 0; i < keys.length; i += 2000) {
+            const records = await db.getAll("messages", IDBKeyRange.bound(keys[i], keys[Math.min(i + 1999, keys.length - 1)]));
+            for (const record of records) {
+                const { timestamp } = record.message;
+                if (typeof timestamp !== "string") {
+                    record.message.timestamp = (timestamp as Date).toISOString();
+                }
+                record.message = sanitizeForIDB(record.message);
+                await db.put("messages", record);
+                migrated++;
+            }
+        }
+
+        await DataStore.set(TIMESTAMP_MIGRATION_KEY, Date.now());
+        if (migrated > 0)
+            new Logger("MessageLoggerEnhanced").log(`Migrated ${migrated} records with Date timestamps to ISO strings`);
+    } catch (e) {
+        console.error("[MessageLoggerEnhanced] Error during timestamp migration:", e);
+    }
 }
 
 export async function deleteMessageIDB(message_id: string) {
@@ -262,14 +310,39 @@ export async function deleteMessagesBulkIDB(message_ids: string[]) {
     message_ids.forEach(id => cachedMessages.delete(id));
 }
 
-export async function clearMessagesIDB(showToast = true) {
+export async function clearMessagesIDB(toast = true) {
     cachedMessages.clear();
-    await db.clear("messages");
-    if (!showToast) return;
 
-    Toasts.show({
-        type: Toasts.Type.MESSAGE,
-        message: "Cleared message log database and cache.",
-        id: Toasts.genId()
+    const deleted = await new Promise<boolean>(resolve => {
+        db.close();
+        const req = indexedDB.deleteDatabase(DB_NAME);
+        req.onsuccess = () => resolve(true);
+        req.onerror = () => resolve(false);
     });
+
+    await initIDB();
+    if (!deleted) await clearMessagesChunkedIDB();
+
+    cachedMessages.clear();
+
+    if (!toast) return;
+
+    showToast("Cleared message log database and cache.", "message");
+}
+
+// faster than db.clear on large dbs
+async function clearMessagesChunkedIDB() {
+    const CLEAR_BATCH_SIZE = 5000;
+    while (true) {
+        const tx = db.transaction("messages", "readwrite", { durability: "relaxed" });
+        const { store } = tx;
+        const keys = (await store.getAllKeys(undefined, CLEAR_BATCH_SIZE)) as string[];
+        if (keys.length === 0) {
+            await tx.done;
+            break;
+        }
+
+        const range = IDBKeyRange.bound(keys[0], keys[keys.length - 1]);
+        await Promise.all([store.delete(range), tx.done]);
+    }
 }

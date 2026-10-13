@@ -23,6 +23,7 @@ import { normalize as posixNormalize, sep as posixSep } from "path/posix";
 import { BigIntLiteral, createSourceFile, Identifier, isArrayLiteralExpression, isCallExpression, isExportAssignment, isIdentifier, isObjectLiteralExpression, isPropertyAccessExpression, isPropertyAssignment, isSatisfiesExpression, isStringLiteral, isVariableStatement, NamedDeclaration, NodeArray, ObjectLiteralExpression, PropertyAssignment, ScriptTarget, StringLiteral, SyntaxKind, isNoSubstitutionTemplateLiteral } from "typescript";
 
 import { getPluginTarget } from "./utils.mjs";
+import { PluginTarget, PluginTargets } from "@utils/pluginTargets";
 
 export interface Dev {
     name: string;
@@ -35,6 +36,7 @@ export interface Command {
 }
 
 export interface PluginData {
+    id?: string;
     name: string;
     description: string;
     tags: string[];
@@ -46,10 +48,12 @@ export interface PluginData {
     commands: Command[];
     required: boolean;
     enabledByDefault: boolean;
-    target: "discordDesktop" | "vesktop" | "equibop" | "desktop" | "web" | "dev";
+    target?: PluginTarget;
     filePath: string;
     dirName: string;
     isModified: boolean;
+    testcordModified?: boolean;
+    aliases?: string[];
 }
 
 export const devs = {} as Record<string, Dev>;
@@ -214,6 +218,7 @@ export async function parseFile(fileName: string) {
         enabledByDefault: false,
         required: false,
         isModified: false,
+        testcordModified: false,
         tags: [] as string[],
         searchTerms: [] as string[],
     } as PluginData;
@@ -299,8 +304,20 @@ export async function parseFile(fileName: string) {
                 if (elements.some(e => !isStringLiteral(e))) throw fail("dependencies array contains non-string elements");
                 data.dependencies = (elements as NodeArray<StringLiteral>).map(e => e.text);
                 break;
+            case "id":
+                if (!isStringLiteral(value) && !isNoSubstitutionTemplateLiteral(value)) throw fail("id is not a string literal");
+                (data as any).id = (value as StringLiteral).text;
+                break;
+            case "aliases":
+                if (!isArrayLiteralExpression(value)) throw fail("aliases is not an array literal");
+                (data as any).aliases = value.elements.map(e => {
+                    if (!isStringLiteral(e)) throw fail("aliases array contains non-string literals");
+                    return (e as StringLiteral).text;
+                });
+                break;
             case "required":
             case "isModified":
+            case "testcordModified":
             case "enabledByDefault":
                 data[key] = value.kind === SyntaxKind.TrueKeyword;
                 break;
@@ -308,10 +325,11 @@ export async function parseFile(fileName: string) {
     }
 
     if (!data.name || !data.description || !data.authors) throw fail("name, description or authors are missing");
+    if ((data as any).id && !/^[a-z0-9_-]+$/i.test((data as any).id)) throw fail("id must be alphanumeric with -_");
 
     const target = getPluginTarget(fileName);
     if (target) {
-        if (!["web", "discordDesktop", "vesktop", "equibop", "desktop", "dev"].includes(target)) throw fail(`invalid target ${target}`);
+        if (!PluginTargets.includes(target as PluginTarget)) throw fail(`invalid target ${target}`);
         data.target = target as any;
     }
 
@@ -325,7 +343,8 @@ export async function parseFile(fileName: string) {
         .join(posixSep)
         .replace(/\/index\.([jt]sx?)$/, "")
         .replace(/^src\/plugins\//, "")
-        .replace(/^src\/equicordplugins\//, "");
+        .replace(/^src\/equicordplugins\//, "")
+        .replace(/^src\/testcordplugins\//, "");
 
     return [data] as const;
 }

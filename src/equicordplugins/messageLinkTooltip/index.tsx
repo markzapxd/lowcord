@@ -12,6 +12,7 @@ import { getUserSettingLazy } from "@api/UserSettings";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
+import type { Message } from "@vencord/discord-types";
 import { findComponentByCodeLazy } from "@webpack";
 import { ChannelStore, MessageStore, Tooltip, useEffect, useState, useStateFromStores } from "@webpack/common";
 import type { ComponentType } from "react";
@@ -97,17 +98,19 @@ export default definePlugin({
     ],
 
     MentionTooltip({ Component, vcProps, ...props }) {
-        return withTooltip(Component, props, vcProps.messageId, vcProps.channelId);
+        return withTooltip(Component, props, vcProps?.messageId, vcProps?.channelId);
     },
 
     ReplyTooltip({ Component, vcProps, ...props }) {
-        const mess = vcProps.baseMessage.messageReference;
-        return withTooltip(Component, props, mess?.message_id, mess?.channel_id);
+        const messageReference = vcProps?.baseMessage?.messageReference;
+        if (!messageReference) return <Component {...props} />;
+        return withTooltip(Component, props, messageReference?.message_id, messageReference?.channel_id);
     },
 
     ForwardTooltip({ Component, vcProps, ...props }) {
-        const mess = vcProps.message.messageReference;
-        return withTooltip(Component, props, mess?.message_id, mess?.channel_id);
+        const messageReference = vcProps?.message?.messageReference;
+        if (!messageReference) return <Component {...props} />;
+        return withTooltip(Component, props, messageReference?.message_id, messageReference?.channel_id);
     },
 });
 
@@ -154,7 +157,7 @@ function useMessage(channelId, messageId) {
         [MessageStore],
         () => MessageStore.getMessage(channelId, messageId)
     );
-    const [message, setMessage] = useState(cachedMessage);
+    const [message, setMessage] = useState<Message | undefined>(cachedMessage);
     useEffect(() => {
         if (message == null)
             (async () => {

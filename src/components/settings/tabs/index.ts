@@ -6,6 +6,7 @@
 
 import "./styles.css";
 
+export { PrivacySecurityPanel } from "../PrivacySecurityPanel";
 export * from "./BaseTab";
 export { default as ChangelogTab } from "./changelog";
 export { default as HealthTab } from "./health";

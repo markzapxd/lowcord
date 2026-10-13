@@ -4,16 +4,45 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import * as DataStore from "@api/DataStore";
+import { definePluginSettings } from "@api/Settings";
 import { TestcordDevs } from "@utils/constants";
 import { Logger } from "@utils/Logger";
-import definePlugin from "@utils/types";
-import { User } from "@vencord/discord-types";
+import definePlugin, { OptionType } from "@utils/types";
+import type { User } from "@vencord/discord-types";
+import { React } from "@webpack/common";
 
-const fs = (window as any).require?.("fs");
-const os = (window as any).require?.("os");
-const pathModule = (window as any).require?.("path");
+import { delPresenceBatch, getAllPresence, putPresenceBatch } from "./db";
 
 const log = new Logger("LastOnline");
+const LEGACY_DATASTORE_KEY = "LastOnline_onlineList";
+const MAX_DISPLAY_AGE = 604800000; // 7 days, matches the display window
+const PRUNE_INTERVAL = 60000; // re-check expirations at most once a minute
+let lastPrune = 0;
+
+const settings = definePluginSettings({
+    showInServers: {
+        type: OptionType.BOOLEAN,
+        description: "Also show the last online indicator in server member lists",
+        default: false,
+        restartNeeded: true
+    },
+    persistAcrossRestarts: {
+        type: OptionType.BOOLEAN,
+        description: "Save last online times to a local database so they stay accurate across restarts",
+        default: true,
+        onChange(newValue: boolean) {
+            if (newValue) {
+                void loadOnlineList();
+            } else if (saveTimer !== null) {
+                clearTimeout(saveTimer);
+                saveTimer = null;
+                dirtyEntries.clear();
+                pendingDeletes.clear();
+            }
+        }
+    }
+});
 
 interface PresenceStatus {
     hasBeenOnline: boolean;
@@ -21,60 +50,86 @@ interface PresenceStatus {
 }
 
 const recentlyOnlineList: Map<string, PresenceStatus> = new Map();
-const MAX_DISPLAY_AGE = 604800000; // 7 days, matches the display window
+const dirtyEntries = new Map<string, PresenceStatus>();
+const pendingDeletes = new Set<string>();
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-function getFilePath() {
-    if (!fs || !os || !pathModule) return null;
-    return pathModule.join(os.homedir(), "Downloads", "onlinelist.json");
-}
-
 function pruneOnlineList() {
+    // Time-based pruning doesn't need per-flush precision. The map can hold
+    // tens of thousands of persisted entries, so a full iteration on every
+    // debounced flush showed up as a multi-ms main-thread spike.
     const now = Date.now();
+    if (now - lastPrune < PRUNE_INTERVAL) return;
+    lastPrune = now;
     for (const [userId, status] of recentlyOnlineList) {
         if (status.lastOffline !== null && now - status.lastOffline > MAX_DISPLAY_AGE) {
             recentlyOnlineList.delete(userId);
+            dirtyEntries.delete(userId);
+            pendingDeletes.add(userId);
         }
     }
 }
 
-function writeOnlineList() {
-    const data = Object.fromEntries(recentlyOnlineList);
-    const filePath = getFilePath();
-    if (fs && filePath) {
-        try {
-            fs.writeFile(filePath, JSON.stringify(data, null, 2), (e: any) => {
-                if (e) log.error("Failed to save online list to file:", e);
-            });
-        } catch (e) {
-            log.error("Failed to save online list to file:", e);
-        }
-    }
-}
-
-// Debounce writes so a burst of presence updates results in a single async write
+// Batch presence writes into a single idb transaction so bursts of updates cost one write
 function saveOnlineList() {
+    if (!settings.store.persistAcrossRestarts) return;
     if (saveTimer !== null) return;
     saveTimer = setTimeout(() => {
         saveTimer = null;
         pruneOnlineList();
-        writeOnlineList();
+        flushWrites();
     }, 2000);
 }
 
-function loadOnlineList() {
-    const filePath = getFilePath();
-    if (fs && filePath) {
-        try {
-            if (fs.existsSync(filePath)) {
-                const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-                for (const [userId, status] of Object.entries(data)) {
-                    recentlyOnlineList.set(userId, status as PresenceStatus);
+function flushWrites() {
+    if (!settings.store.persistAcrossRestarts) {
+        dirtyEntries.clear();
+        pendingDeletes.clear();
+        return;
+    }
+    const entries = [...dirtyEntries];
+    dirtyEntries.clear();
+    const deletes = [...pendingDeletes];
+    pendingDeletes.clear();
+    if (entries.length) {
+        putPresenceBatch(entries).catch(e => log.error("Failed to save presence to idb:", e));
+    }
+    if (deletes.length) {
+        delPresenceBatch(deletes).catch(e => log.error("Failed to delete presence from idb:", e));
+    }
+}
+
+async function loadOnlineList() {
+    if (!settings.store.persistAcrossRestarts) return;
+    try {
+        const storedData = await getAllPresence();
+        for (const [userId, status] of Object.entries(storedData)) {
+            recentlyOnlineList.set(userId, status);
+        }
+    } catch (e) {
+        log.error("Failed to load presence from idb:", e);
+    }
+
+    // One-time migration from the old DataStore key
+    try {
+        const legacy = await DataStore.get<Record<string, PresenceStatus>>(LEGACY_DATASTORE_KEY);
+        if (legacy && typeof legacy === "object") {
+            let migrated = 0;
+            for (const [userId, status] of Object.entries(legacy)) {
+                if (!recentlyOnlineList.has(userId)) {
+                    recentlyOnlineList.set(userId, status);
+                    dirtyEntries.set(userId, status);
+                    migrated++;
                 }
             }
-        } catch (e) {
-            log.error("Failed to load online list from file:", e);
+            if (migrated > 0) {
+                flushWrites();
+                await DataStore.del(LEGACY_DATASTORE_KEY);
+                log.info(`Migrated ${migrated} presence records from DataStore to idb`);
+            }
         }
+    } catch (e) {
+        log.error("Failed to migrate legacy presence data:", e);
     }
 }
 
@@ -93,14 +148,20 @@ function handlePresenceUpdate(status: string, userId: string) {
             changed = true;
         }
     } else {
+        // Never seen before. If first sighting is offline we don't know when
+        // they went offline, so don't record a bogus "just now" timestamp.
+        if (status === "offline") return;
         recentlyOnlineList.set(userId, {
-            hasBeenOnline: status !== "offline",
-            lastOffline: status === "offline" ? Date.now() : null
+            hasBeenOnline: true,
+            lastOffline: null
         });
         changed = true;
     }
     // Only schedule a write when something actually changed
-    if (changed) saveOnlineList();
+    if (changed) {
+        dirtyEntries.set(userId, recentlyOnlineList.get(userId)!);
+        saveOnlineList();
+    }
 }
 
 function formatTime(time: number) {
@@ -117,41 +178,68 @@ function formatTime(time: number) {
 
 export default definePlugin({
     name: "LastOnline",
-    description: "Adds a last online indicator under usernames in your DM list and guild member list",
+    description: "Adds a last online indicator under usernames in your DM list",
     tags: ["Friends", "Utility"],
     authors: [TestcordDevs.x2b],
+    settings,
     flux: {
-        PRESENCE_UPDATES({ updates }) {
-            log.debug(`Received PRESENCE_UPDATES with ${updates.length} updates`);
-            updates.forEach(update => {
-                handlePresenceUpdate(update.status, update.user.id);
-            });
+        PRESENCE_UPDATES({ updates }: { updates?: Array<{ user?: { id?: string; }; status?: string; }>; }) {
+            if (!Array.isArray(updates)) return;
+            // Login/guild-switch bursts can carry thousands of entries. The
+            // bookkeeping below is cheap per entry but blocks the dispatch
+            // (and every other subscriber) in aggregate, so huge batches are
+            // processed just off the dispatch path. Results are identical,
+            // only delayed by a tick.
+            if (updates.length > 200) {
+                const batch = updates;
+                setTimeout(() => {
+                    for (const update of batch) {
+                        if (update?.user?.id) {
+                            handlePresenceUpdate(update.status ?? "offline", update.user.id);
+                        }
+                    }
+                }, 0);
+                return;
+            }
+            for (const update of updates) {
+                if (update?.user?.id) {
+                    handlePresenceUpdate(update.status ?? "offline", update.user.id);
+                }
+            }
         }
     },
 
     start() {
         log.info("LastOnline plugin started");
 
-        loadOnlineList();
+        void loadOnlineList();
 
         try {
             // Lazy import to avoid early execution
             const { addMemberListDecorator } = require("@api/MemberListDecorators");
 
-            // Add decorator to member list
+            // DM member list is the default surface
             addMemberListDecorator("last-online-indicator", props => {
                 if (!props.user) {
-                    log.debug(`Decorator called with no user, type: ${props.type}`);
                     return null;
                 }
-                log.debug(`Decorator called for user ${props.user.username}#${props.user.discriminator}, type: ${props.type}`);
                 if (this.shouldShowRecentlyOffline(props.user)) {
-                    log.debug(`Showing last online for user ${props.user.username}#${props.user.discriminator}`);
                     return this.buildRecentlyOffline(props.user);
                 }
-                log.debug(`Not showing last online for user ${props.user.username}#${props.user.discriminator}`);
                 return null;
-            });
+            }, "dms");
+
+            if (settings.store.showInServers) {
+                addMemberListDecorator("last-online-indicator-servers", props => {
+                    if (!props.user) {
+                        return null;
+                    }
+                    if (this.shouldShowRecentlyOffline(props.user)) {
+                        return this.buildRecentlyOffline(props.user);
+                    }
+                    return null;
+                }, "guilds");
+            }
 
             log.info("LastOnline decorators added");
         } catch (e) {
@@ -162,6 +250,7 @@ export default definePlugin({
         try {
             const { removeMemberListDecorator } = require("@api/MemberListDecorators");
             removeMemberListDecorator("last-online-indicator");
+            removeMemberListDecorator("last-online-indicator-servers");
         } catch (e) {
             log.error("Failed to remove member list decorator:", e);
         }
@@ -169,14 +258,14 @@ export default definePlugin({
         if (saveTimer !== null) {
             clearTimeout(saveTimer);
             saveTimer = null;
-            pruneOnlineList();
-            writeOnlineList();
         }
+        lastPrune = 0; // force the final prune below despite throttling
+        pruneOnlineList();
+        flushWrites();
     },
     shouldShowRecentlyOffline(user: User) {
         const presenceStatus = recentlyOnlineList.get(user.id);
         if (!presenceStatus) {
-            log.debug(`No presence status found for user ${user.username}#${user.discriminator}`);
             return false;
         }
 
@@ -184,8 +273,7 @@ export default definePlugin({
         if (shouldShow) {
             const timeSinceOffline = Date.now() - (presenceStatus.lastOffline || 0);
             // Only show if offline for less than 7 days (604800000 ms)
-            if (timeSinceOffline > 604800000) {
-                log.debug(`User ${user.username}#${user.discriminator} offline too long (${Math.floor(timeSinceOffline / 86400000)} days), not showing indicator`);
+            if (timeSinceOffline > MAX_DISPLAY_AGE) {
                 return false;
             }
         }
@@ -195,31 +283,28 @@ export default definePlugin({
     buildRecentlyOffline(user: User) {
         const presenceStatus = recentlyOnlineList.get(user.id);
         if (!presenceStatus) {
-            log.warn(`buildRecentlyOffline called for user ${user.username}#${user.discriminator} but no presence status found`);
             return null;
         }
 
         let text: string;
         if (presenceStatus.lastOffline === null) {
-            // Online now
             text = "now";
         } else {
             const formattedTime = formatTime(presenceStatus.lastOffline);
-            if (!formattedTime) {
-                log.warn(`formatTime returned empty string for user ${user.username}#${user.discriminator}`);
-                return null;
-            }
             text = `${formattedTime} ago`;
         }
 
-        const { React } = (globalThis as any).Vencord.Webpack.Common;
-        return React.createElement("div", {
-            style: {
-                color: "var(--text-muted)",
-                fontSize: "12px",
-                lineHeight: "16px",
-                marginTop: "2px"
-            }
-        }, "Last online ", React.createElement("strong", null, text));
+        return (
+            <div
+                style={{
+                    color: "var(--text-muted)",
+                    fontSize: "12px",
+                    lineHeight: "16px",
+                    marginTop: "2px"
+                }}
+            >
+                Last online <strong>{text}</strong>
+            </div>
+        );
     }
 });

@@ -19,6 +19,7 @@
 import "./styles.css";
 
 import * as DataStore from "@api/DataStore";
+import { PluginHealth } from "@api/PluginHealth";
 import { isPluginEnabled, stopPlugin } from "@api/PluginManager";
 import { useSettings } from "@api/Settings";
 import { Button } from "@components/Button";
@@ -35,13 +36,18 @@ import { isTruthy } from "@utils/guards";
 import { Logger } from "@utils/Logger";
 import { Margins } from "@utils/margins";
 import { classes } from "@utils/misc";
+import { PluginTarget } from "@utils/pluginTargets";
+import { isExperimentalPlugin, isLegacyPlugin } from "@utils/pluginWarnings";
 import { useAwaiter, useCleanupEffect, useIntersection } from "@utils/react";
-import { PluginTag, PluginTags } from "@utils/types";
-import { Alerts, ConfirmModal, lodash, openModal, Parser, React, SearchableSelect, Select, TextInput, Toasts, Tooltip, useCallback, useMemo, useRef, useState } from "@webpack/common";
-import { JSX } from "react";
+import { isTestcordModified } from "@utils/testcordIcons";
+import { Plugin, PluginTag, PluginTags } from "@utils/types";
+import { ToastPosition } from "@vencord/discord-types/enums";
+import { Alerts, ConfirmModal, openModal, Parser, React, SearchableSelect, Select, showToast, TextInput, Tooltip, useCallback, useEffect, useMemo, useRef, useState } from "@webpack/common";
 
 import Plugins, { ExcludedPlugins, PluginMeta } from "~plugins";
 
+import { openSettingsTabModal, wrapTab } from "../BaseTab";
+import { registerJumpListener, setPluginsTabOpener } from "./jumpToPlugin";
 import { PluginCard } from "./PluginCard";
 import { openWarningModal } from "./PluginModal";
 import { StockPluginsCard, UserPluginsCard } from "./PluginStatCards";
@@ -50,18 +56,24 @@ import { UIElementsButton } from "./UIElements";
 export const cl = classNameFactory("vc-plugins-");
 export const logger = new Logger("PluginSettings", "#a6d189");
 
-const PluginSearchPrefixes = ["tcp:", "testcordplugin:"];
+const PluginSearchPrefixes: Array<{ prefix: string; folders: string[]; modifiedOnly?: boolean; }> = [
+    { prefix: "tcp:", folders: ["src/testcordplugins/"] },
+    { prefix: "testcordplugin:", folders: ["src/testcordplugins/"] },
+    { prefix: "tcm:", folders: ["src/testcordplugins/", "src/equicordplugins/", "src/plugins/"], modifiedOnly: true },
+    { prefix: "vcp:", folders: ["src/plugins/"] },
+    { prefix: "vencordplugin:", folders: ["src/plugins/"] },
+    { prefix: "eqp:", folders: ["src/equicordplugins/"] },
+    { prefix: "equicordplugin:", folders: ["src/equicordplugins/"] },
+    { prefix: "plg:", folders: ["src/testcordplugins/", "src/equicordplugins/", "src/plugins/"] },
+    { prefix: "plugin:", folders: ["src/testcordplugins/", "src/equicordplugins/", "src/plugins/"] },
+    { prefix: "plugins:", folders: ["src/testcordplugins/", "src/equicordplugins/", "src/plugins/"] }
+];
 const PluginLoadBatchSize = 36;
 
 function showErrorToast(message: string) {
-    Toasts.show({
-        message,
-        type: Toasts.Type.FAILURE,
-        id: Toasts.genId(),
-        options: {
-            position: Toasts.Position.BOTTOM
-        }
-    });
+    showToast(message, "failure", {
+            position: ToastPosition.BOTTOM
+        });
 }
 
 function ReloadRequiredCard({ required, enabledPlugins, openWarningModal, resetCheckAndDo }) {
@@ -115,17 +127,21 @@ const SearchStatus = {
     USER_PLUGINS: 8,
     API_PLUGINS: 9,
     BETTERDISCORD: 10,
+    EXPERIMENTAL: 11,
+    LEGACY: 12,
+    TESTCORD_MODIFIED: 13,
 } as const;
 
 type SearchStatus = typeof SearchStatus[keyof typeof SearchStatus];
 
-export const ExcludedReasons: Record<"web" | "discordDesktop" | "vesktop" | "equibop" | "desktop" | "dev", string> = {
+export const ExcludedReasons: Record<PluginTarget, string> = {
     desktop: "Discord Desktop app or Vesktop/Equibop",
     discordDesktop: "Discord Desktop app",
     vesktop: "Vesktop/Equibop apps",
     equibop: "Vesktop/Equibop apps",
     web: "Vesktop/Equibop apps & Discord web",
-    dev: "Developer version of Equicord"
+    dev: "Developer version of Equicord",
+    browser: "Web Browser version of Equicord"
 };
 
 function ExcludedPluginsList({ search }: { search: string; }) {
@@ -153,8 +169,10 @@ function ExcludedPluginsList({ search }: { search: string; }) {
     );
 }
 
-export default function PluginSettings() {
-    const settings = useSettings();
+function PluginSettings() {
+    // Every settings read in this tab is under `plugins`, so scoping the subscription
+    // stops unrelated settings writes (themes, layout, ...) from re-rendering it.
+    const settings = useSettings(["plugins.*"]);
     const changeRef = useRef<ChangeList<string>>(null);
     const changes = changeRef.current ??= new ChangeList<string>();
 
@@ -208,24 +226,50 @@ export default function PluginSettings() {
         return o;
     }, []);
 
-const sortedPlugins = useMemo(() =>
-    Object.values(Plugins)
-        .filter(p => p.name)
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .toSorted((a, b) => Number(settings.plugins[b.name]?.isFavorite ?? false) - Number(settings.plugins[a.name]?.isFavorite ?? false)),
-    []
-);
+    const sortedPlugins = useMemo(() =>
+        Object.values(Plugins)
+            .filter(p => p.name)
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        []
+    );
 
     const hasUserPlugins = useMemo(() => !IS_STANDALONE && Object.values(PluginMeta).some(m => m.userPlugin), []);
 
     const [searchValue, setSearchValue] = useState<{ value: string; tags: PluginTag[]; status: number; author: string; }>({ value: "", tags: [] as PluginTag[], status: SearchStatus.ALL, author: "" });
 
+    useEffect(() => {
+        return registerJumpListener(pluginName => {
+            setSearchValue({
+                value: pluginName,
+                tags: [],
+                status: SearchStatus.ALL,
+                author: "",
+            });
+
+            setTimeout(() => {
+                const searchInput = document.querySelector<HTMLInputElement>(`.${cl("filter-control")} input, input.${cl("filter-control")}`);
+                if (searchInput) {
+                    searchInput.focus();
+                    searchInput.select();
+                }
+                const section = document.querySelector(`.${cl("section-heading")}`) ?? searchInput;
+                section?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }, 80);
+        });
+    }, []);
+
     const search = searchValue.value.toLowerCase();
-    const pluginSearch = useMemo(() => {
+    const searchPrefixMatch = useMemo(() => {
         const trimmedSearch = search.trimStart();
 
-        for (const prefix of PluginSearchPrefixes) {
-            if (trimmedSearch.startsWith(prefix)) return trimmedSearch.slice(prefix.length).trim();
+        for (const entry of PluginSearchPrefixes) {
+            if (trimmedSearch.startsWith(entry.prefix)) {
+                return {
+                    folders: entry.folders,
+                    modifiedOnly: entry.modifiedOnly,
+                    query: trimmedSearch.slice(entry.prefix.length).trim()
+                };
+            }
         }
 
         return null;
@@ -297,88 +341,125 @@ const sortedPlugins = useMemo(() =>
                 if (!pluginMetaInfo) return false;
                 return pluginMetaInfo.folderName?.startsWith("src/Betterdiscordplugins/") ||
                     plugin.tags?.includes("betterdiscord");
+            case SearchStatus.EXPERIMENTAL:
+                if (!isExperimentalPlugin(plugin.name) && !plugin.experimental && !plugin.tags?.includes("experimental")) return false;
+                break;
+            case SearchStatus.LEGACY:
+                if (!isLegacyPlugin(plugin.name) && !plugin.legacy && !plugin.tags?.includes("legacy")) return false;
+                break;
+            case SearchStatus.TESTCORD_MODIFIED:
+                if (!isTestcordModified(plugin, PluginMeta[plugin.name]?.folderName)) return false;
+                break;
         }
 
-        if (tags.length && tags.some(t => !plugin.tags?.includes(t))) return false;
+        if (tags.length && tags.some(t => {
+            if (t === "Testcord Modified") return !isTestcordModified(plugin, PluginMeta[plugin.name]?.folderName);
+            return !plugin.tags?.includes(t);
+        })) return false;
 
         if (searchValue.author && !plugin.authors?.some(a => a?.name === searchValue.author)) return false;
 
-        const pluginSearchValue = pluginSearch ?? search;
+        if (searchPrefixMatch) {
+            if (searchPrefixMatch.modifiedOnly && !isTestcordModified(plugin, PluginMeta[plugin.name]?.folderName)) return false;
+            const folder = PluginMeta[plugin.name]?.folderName || "";
+            if (!searchPrefixMatch.folders.some(f => folder.startsWith(f))) return false;
+        }
+
+        const pluginSearchValue = searchPrefixMatch ? searchPrefixMatch.query : search;
 
         if (!pluginSearchValue.length) return true;
 
+        const normSearch = pluginSearchValue.replace(/\s+/g, "");
+        const normName = plugin.name.toLowerCase().replace(/\s+/g, "");
+
         return (
-            plugin.name.toLowerCase().includes(pluginSearchValue.replace(/\s+/g, "")) ||
+            plugin.name.toLowerCase().includes(pluginSearchValue) ||
+            normName.includes(normSearch) ||
             plugin.name.match(/[A-Z]/g)?.join("").toLowerCase().includes(pluginSearchValue) || // acronyms like BF for BetterFolders
             plugin.description.toLowerCase().includes(pluginSearchValue) ||
             plugin.searchTerms?.some(t => t.toLowerCase().includes(pluginSearchValue))
         );
-    }, [searchValue, search, pluginSearch]);
+    }, [searchValue, search, searchPrefixMatch]);
 
     const [newPluginsSet] = useAwaiter(() => DataStore.get("Vencord_existingPlugins").then((cachedPlugins: Record<string, number> | undefined) => {
         const now = Date.now() / 1000;
         const existingTimestamps: Record<string, number> = {};
-        const sortedPluginNames = Object.values(sortedPlugins).map(plugin => plugin.name);
+
+        // Genuine first run: no baseline exists, so nothing is "new" yet.
+        // Establish the baseline and return null instead of marking everything new.
+        if (!cachedPlugins) {
+            for (const { name: p } of sortedPlugins) existingTimestamps[p] = now;
+            DataStore.set("Vencord_existingPlugins", existingTimestamps);
+            return null;
+        }
 
         const newPlugins: string[] = [];
         for (const { name: p } of sortedPlugins) {
-            const time = existingTimestamps[p] = cachedPlugins?.[p] ?? now;
-            if ((time + 60 * 60 * 24 * 2) > now) {
+            const cached = cachedPlugins[p];
+            if (cached == null) {
+                // Plugin was added since the previous launch
+                existingTimestamps[p] = now;
                 newPlugins.push(p);
+            } else {
+                existingTimestamps[p] = cached;
             }
         }
         DataStore.set("Vencord_existingPlugins", existingTimestamps);
 
-        return lodash.isEqual(newPlugins, sortedPluginNames) ? null : new Set(newPlugins);
+        return newPlugins.length ? new Set(newPlugins) : null;
     }));
 
     const handleRestartNeeded = useCallback((name: string, key: string) => changes.handleChange(`${name}:${key}`), [changes]);
 
-    const { plugins, requiredPlugins } = useMemo(() => {
-        const plugins = [] as JSX.Element[];
-        const requiredPlugins = [] as JSX.Element[];
+    // Filtering is cheap; building JSX is not. This used to allocate a <PluginCard>
+    // element for every matching plugin (~700) on each keystroke, of which the
+    // visiblePlugins slice below then discarded all but `visibleCount`. Split the two:
+    // filter and classify first, build elements only for what actually renders.
+    const { filteredPlugins, requiredPluginDefs } = useMemo(() => {
+        const filtered: Plugin[] = [];
+        const required: Plugin[] = [];
+
+        // Favorites first, each group still in name order. This used to be a second full
+        // sort chained onto `sortedPlugins`, whose `[]` deps meant it never re-ran when a
+        // plugin was favorited, so the order only refreshed on remount. Doing it here costs
+        // two cheap passes and reuses a memo that already re-runs on settings changes.
+        const ordered = [
+            ...sortedPlugins.filter(p => settings.plugins[p.name]?.isFavorite),
+            ...sortedPlugins.filter(p => !settings.plugins[p.name]?.isFavorite)
+        ];
 
         const showApi = searchValue.status === SearchStatus.API_PLUGINS;
-        for (const p of sortedPlugins) {
+        for (const p of ordered) {
             if (p.hidden || (!p.settings?.def && p.name.endsWith("API") && !showApi))
                 continue;
 
             if (!pluginFilter(p, newPluginsSet)) continue;
 
             const isRequired = p.required || p.isDependency || depMap[p.name]?.some(d => settings.plugins[d].enabled);
-
-            if (isRequired) {
-                const tooltipText = p.required || !depMap[p.name]
-                    ? "This plugin is required for Testcord to function."
-                    : <PluginDependencyList deps={depMap[p.name]?.filter(d => settings.plugins[d].enabled)} />;
-
-                requiredPlugins.push(
-                    <Tooltip text={tooltipText} key={p.name}>
-                        {({ onMouseLeave, onMouseEnter }) => (
-                            <PluginCard
-                                onMouseLeave={onMouseLeave}
-                                onMouseEnter={onMouseEnter}
-                                onRestartNeeded={handleRestartNeeded}
-                                disabled={true}
-                                plugin={p}
-                            />
-                        )}
-                    </Tooltip>
-                );
-            } else {
-                plugins.push(
-                    <PluginCard
-                        onRestartNeeded={handleRestartNeeded}
-                        disabled={false}
-                        plugin={p}
-                        isNew={newPluginsSet?.has(p.name)}
-                        key={p.name}
-                    />
-                );
-            }
+            (isRequired ? required : filtered).push(p);
         }
-        return { plugins, requiredPlugins };
-    }, [sortedPlugins, searchValue, newPluginsSet, depMap, settings.plugins, pluginFilter, handleRestartNeeded]);
+        return { filteredPlugins: filtered, requiredPluginDefs: required };
+    }, [sortedPlugins, searchValue, newPluginsSet, depMap, settings.plugins, pluginFilter]);
+
+    const requiredPlugins = useMemo(() => requiredPluginDefs.map(p => {
+        const tooltipText = p.required || !depMap[p.name]
+            ? "This plugin is required for Testcord to function."
+            : <PluginDependencyList deps={depMap[p.name]?.filter(d => settings.plugins[d].enabled)} />;
+
+        return (
+            <Tooltip text={tooltipText} key={p.name}>
+                {({ onMouseLeave, onMouseEnter }) => (
+                    <PluginCard
+                        onMouseLeave={onMouseLeave}
+                        onMouseEnter={onMouseEnter}
+                        onRestartNeeded={handleRestartNeeded}
+                        disabled={true}
+                        plugin={p}
+                    />
+                )}
+            </Tooltip>
+        );
+    }), [requiredPluginDefs, depMap, settings.plugins, handleRestartNeeded]);
 
     function resetCheckAndDo() {
         let restartNeeded = false;
@@ -388,6 +469,7 @@ const sortedPlugins = useMemo(() =>
 
             if (Plugins[plugin].patches?.length) {
                 pluginSettings.enabled = false;
+                void PluginHealth.recordPluginChange(plugin, false);
                 changes.handleChange(plugin);
                 restartNeeded = true;
                 continue;
@@ -402,6 +484,7 @@ const sortedPlugins = useMemo(() =>
             }
 
             pluginSettings.enabled = false;
+            void PluginHealth.recordPluginChange(plugin, false);
         }
 
         if (restartNeeded) {
@@ -433,21 +516,30 @@ const sortedPlugins = useMemo(() =>
         const enabledUserPlugins = enabledPlugins.filter(p => PluginMeta[p].userPlugin).length;
         return { totalStockPlugins, totalUserPlugins, enabledStockPlugins, enabledUserPlugins, enabledPlugins };
     }, [settings.plugins]);
-    const pluginsToLoad = Math.min(PluginLoadBatchSize, plugins.length);
+    const pluginsToLoad = Math.min(PluginLoadBatchSize, filteredPlugins.length);
     const [visibleCount, setVisibleCount] = React.useState(pluginsToLoad);
     const loadMore = React.useCallback(() => {
-        setVisibleCount(v => Math.min(v + pluginsToLoad, plugins.length));
-    }, [plugins.length]);
+        setVisibleCount(v => Math.min(v + pluginsToLoad, filteredPlugins.length));
+    }, [pluginsToLoad, filteredPlugins.length]);
 
     const [sentinelRef, isSentinelVisible] = useIntersection();
     React.useEffect(() => {
-        if (isSentinelVisible && visibleCount < plugins.length) {
+        if (isSentinelVisible && visibleCount < filteredPlugins.length) {
             loadMore();
         }
-    }, [isSentinelVisible, visibleCount, plugins.length, loadMore]);
+    }, [isSentinelVisible, visibleCount, filteredPlugins.length, loadMore]);
 
-    const visiblePlugins = plugins.slice(0, visibleCount);
-    const authorGithub = searchValue.author ? ("https://github.com/" + (authorOptions.find(a => a.value === searchValue.author)?.github || searchValue.author)) : "";
+    const visiblePlugins = useMemo(() => filteredPlugins.slice(0, visibleCount).map(p => (
+        <PluginCard
+            onRestartNeeded={handleRestartNeeded}
+            disabled={false}
+            plugin={p}
+            isNew={newPluginsSet?.has(p.name)}
+            key={p.name}
+        />
+    )), [filteredPlugins, visibleCount, newPluginsSet, handleRestartNeeded]);
+    const rawAuthorGithub = searchValue.author ? (authorOptions.find(a => a.value === searchValue.author)?.github || searchValue.author) : "";
+    const authorGithub = rawAuthorGithub ? (rawAuthorGithub.startsWith("http") ? rawAuthorGithub : "https://github.com/" + rawAuthorGithub) : "";
 
     return (
         <SettingsTab>
@@ -492,11 +584,14 @@ const sortedPlugins = useMemo(() =>
                             { label: "Show Disabled", value: SearchStatus.DISABLED },
                             { label: "Show Equicord", value: SearchStatus.EQUICORD },
                             { label: "Show Testcord", value: SearchStatus.TESTCORD },
+                            { label: "Show Testcord Modified", value: SearchStatus.TESTCORD_MODIFIED },
                             { label: "Show Vencord", value: SearchStatus.VENCORD },
                             { label: "Show New", value: SearchStatus.NEW },
                             hasUserPlugins && { label: "Show UserPlugins", value: SearchStatus.USER_PLUGINS },
                             { label: "Show API Plugins", value: SearchStatus.API_PLUGINS },
                             { label: "Show BetterDiscord", value: SearchStatus.BETTERDISCORD },
+                            { label: "Show Experimental", value: SearchStatus.EXPERIMENTAL },
+                            { label: "Show Legacy", value: SearchStatus.LEGACY },
                         ].filter(isTruthy)}
                         serialize={String}
                         select={status => setSearchValue(prev => ({ ...prev, status }))}
@@ -526,8 +621,8 @@ const sortedPlugins = useMemo(() =>
                             rel="noreferrer"
                             style={{ display: "flex", alignItems: "center", gap: "4px", color: "var(--text-link)", fontSize: "14px", textDecoration: "none", whiteSpace: "nowrap" }}
                         >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
-                            {authorOptions.find(a => a.value === searchValue.author)?.github || searchValue.author}
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" /></svg>
+                            {(authorOptions.find(a => a.value === searchValue.author)?.github || searchValue.author).replace(/^https?:\/\/github\.com\//, "")}
                         </a>
                     )}
                 </div>
@@ -535,7 +630,7 @@ const sortedPlugins = useMemo(() =>
 
             <HeadingTertiary className={classes(Margins.top20, Margins.bottom8, cl("section-heading"))}>Plugins</HeadingTertiary>
 
-            {plugins.length || requiredPlugins.length
+            {filteredPlugins.length || requiredPlugins.length
                 ? (
                     <>
                         <div className={cl("grid")}>
@@ -544,7 +639,7 @@ const sortedPlugins = useMemo(() =>
                                 : <Paragraph>No plugins meet the search criteria.</Paragraph>
                             }
                         </div>
-                        {visibleCount < plugins.length && (
+                        {visibleCount < filteredPlugins.length && (
                             <div ref={sentinelRef} style={{ height: 32 }} />
                         )}
                     </>
@@ -567,6 +662,10 @@ const sortedPlugins = useMemo(() =>
         </SettingsTab >
     );
 }
+
+setPluginsTabOpener(() => openSettingsTabModal(PluginSettings));
+
+export default wrapTab(PluginSettings, "Plugins");
 
 export function PluginDependencyList({ deps }: { deps: string[]; }) {
     return (

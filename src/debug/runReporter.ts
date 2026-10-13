@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { addPatch } from "@api/PluginManager";
 import { initWs } from "@plugins/devCompanion.dev/initWs";
 import { Logger } from "@utils/Logger";
 import * as Webpack from "@webpack";
@@ -13,31 +12,27 @@ import { getBuildNumber, patches, patchTimings } from "@webpack/patcher";
 import { loadLazyChunks } from "./loadLazyChunks";
 import { reporterData } from "./reporterData";
 
+const LazySearchNames: Partial<Record<Webpack.TypeWebpackSearchHistory, string>> = {
+    find: "findLazy",
+    findByProps: "findByPropsLazy",
+    findByCode: "findByCodeLazy",
+    findStore: "findStoreLazy",
+    findComponent: "findComponentLazy",
+    findComponentByCode: "findComponentByCodeLazy",
+    findExportedComponent: "findExportedComponentLazy",
+    findCssClasses: "findCssClassesLazy",
+    mapMangledModule: "mapMangledModuleLazy",
+    extractAndLoadChunks: "extractAndLoadChunksLazy"
+};
+
 async function runReporter() {
     const ReporterLogger = new Logger("Reporter");
 
     try {
         ReporterLogger.log("Starting test...");
 
-        const { promise: loadLazyChunksDone, resolve: loadLazyChunksResolve } = Promise.withResolvers<void>();
-
-        // The main patch for starting the reporter chunk loading
-        addPatch({
-            find: '"Could not find app-mount"',
-            replacement: {
-                match: /"Could not find app-mount"/,
-                replace: "(Vencord.Webpack._initReporter(),$&)"
-            }
-        }, "Equicord Reporter");
-
-        // @ts-expect-error
-        Vencord.Webpack._initReporter = function () {
-            // initReporter is called in the patched entry point of Discord
-            // setImmediate to only start searching for lazy chunks after Discord initialized the app
-            setTimeout(() => loadLazyChunks().then(loadLazyChunksResolve), 0);
-        };
-
-        await loadLazyChunksDone;
+        await Webpack.onceReady;
+        await loadLazyChunks();
 
         // Manually require all modules to make sure all lazily required modules are patched
         for (const moduleId of Object.keys(Webpack.wreq.m)) {
@@ -67,7 +62,7 @@ async function runReporter() {
             }
         }
 
-        for (const [searchType, args] of Webpack.lazyWebpackSearchHistory) {
+        for (const [searchType, args, stack] of Webpack.lazyWebpackSearchHistory) {
             let method = searchType;
 
             if (searchType === "findComponent") method = "find";
@@ -99,7 +94,7 @@ async function runReporter() {
 
                 if (result == null || (result.$$vencordGetWrappedComponent != null && result.$$vencordGetWrappedComponent() == null)) throw new Error("Webpack Find Fail");
             } catch (e) {
-                let logMessage = searchType;
+                let logMessage = LazySearchNames[searchType] ?? searchType;
                 if (method === "find" || method === "proxyLazyWebpack" || method === "LazyComponentWebpack") {
                     if (args[0].$$vencordProps != null) {
                         logMessage += `(${args[0].$$vencordProps.map(arg => `"${arg}"`).join(", ")})`;
@@ -110,14 +105,20 @@ async function runReporter() {
                     logMessage += `([${args[0].map(arg => `"${arg}"`).join(", ")}], ${args[1].toString()})`;
                 } else if (method === "mapMangledModule") {
                     const failedMappings = Object.keys(args[1]).filter(key => result?.[key] == null);
+                    const mappings = failedMappings.map(mapping => {
+                        const filter = args[1][mapping];
+                        if (filter.$$vencordProps == null) return `\t${mapping}: ${filter.toString().slice(0, 147)}...`;
 
-                    logMessage += `("${args[0]}", {\n${failedMappings.map(mapping => `\t${mapping}: ${args[1][mapping].toString().slice(0, 147)}...`).join(",\n")}\n})`;
+                        return `\t${mapping}: filters.${filter.$$vencordFilter}(${filter.$$vencordProps.map(arg => `'${arg}'`).join(", ")})`;
+                    });
+
+                    logMessage += `('${args[0]}', {\n${mappings.join(",\n")}\n})`;
                 } else {
                     logMessage += `(${args.map(arg => `"${arg}"`).join(", ")})`;
                 }
                 if (IS_COMPANION_TEST)
                     reporterData.failedWebpack[method].push(args.map(a => String(a)));
-                ReporterLogger.log("Webpack Find Fail:", logMessage);
+                ReporterLogger.log("Webpack Find Fail:", logMessage, stack?.split("\n")[2]);
             }
         }
 

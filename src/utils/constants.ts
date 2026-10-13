@@ -26,7 +26,7 @@ export const EQUICORD_SUPPORT_CHANNEL_ID = "1297590739911573585";
 export const DONOR_ROLE_ID = "1173316879083896912";
 export const CONTRIB_ROLE_ID = "1222677964760682556";
 export const EQUICORD_TEAM = "1173520023239786538";
-export const EQUICORD_HELPERS = "1326406112144265257";
+export const EQUICORD_HELPERS = "1509542478905213088";
 export const VENCORD_CONTRIB_ROLE_ID = "1173343399470964856";
 export const EQUIBOT_USER_ID = "1243063117852835941";
 export const TESTCORD_GUILD_ID = "1434211283317690502";
@@ -48,6 +48,7 @@ export const GUILD_IDS = [GUILD_ID, VC_GUILD_ID];
 export const SUPPORT_CHANNEL_IDS = [SUPPORT_CHANNEL_ID, VC_SUPPORT_CHANNEL_ID];
 export const DONOR_ROLE_IDS = [DONOR_ROLE_ID, VC_DONOR_ROLE_ID];
 export const CONTRIB_ROLE_IDS = [CONTRIB_ROLE_ID, VENCORD_CONTRIB_ROLE_ID, VC_CONTRIB_ROLE_ID];
+export const KNOWN_ISSUES_CHANNEL_IDS = [KNOWN_ISSUES_CHANNEL_ID, VC_KNOWN_ISSUES_CHANNEL_ID];
 
 const platform = navigator.platform.toLowerCase();
 export const IS_WINDOWS = platform.startsWith("win");
@@ -559,7 +560,7 @@ export const Devs = /* #__PURE__*/ Object.freeze({
     },
     nyx: {
         name: "verticalsync.",
-        id: 1207087393929171095n
+        id: 1280505961546649633n
     },
     nekohaxx: {
         name: "nekohaxx",
@@ -612,6 +613,10 @@ export const Devs = /* #__PURE__*/ Object.freeze({
     RamziAH: {
         name: "RamziAH",
         id: 1279957227612147747n
+    },
+    ThaUnknown: {
+        name: "ThaUnknown_",
+        id: 252390917665718273n
     },
     SomeAspy: {
         name: "SomeAspy",
@@ -674,6 +679,10 @@ export const Devs = /* #__PURE__*/ Object.freeze({
         name: "Lunascape",
         id: 383365021415243776n
     },
+    paige: {
+        name: "paige",
+        id: 1375697625864601650n
+    },
     jax: {
         name: "jax",
         id: 1493703027801194598n
@@ -681,6 +690,26 @@ export const Devs = /* #__PURE__*/ Object.freeze({
     yuna0x0: {
         name: "yuna0x0",
         id: 213656926414831616n
+    },
+    scattagain: {
+        name: "Amelia",
+        id: 1098234477626544180n
+    },
+    Davri: {
+        name: "Davri",
+        id: 457579346282938368n
+    },
+    Kaede: {
+        name: "Kaede",
+        id: 1492642701320126504n
+    },
+    c0nnorgg: {
+        name: "c0nnorgg",
+        id: 1088882977985003620n,
+    },
+    f3tch: {
+        name: "f3tch",
+        id: 1016388460929626174n
     }
 } satisfies Record<string, Dev>);
 
@@ -698,8 +727,8 @@ export const EquicordDevs = Object.freeze({
         id: 353229259482857475n
     },
     nyx: {
-        name: "verticalsync",
-        id: 1207087393929171095n
+        name: "verticalsync.",
+        id: 1280505961546649633n
     },
     Cortex: {
         name: "Cortex",
@@ -768,6 +797,10 @@ export const EquicordDevs = Object.freeze({
     Balaclava: {
         name: "Balaclava",
         id: 854886148455399436n
+    },
+    tt: {
+        name: "_.tt",
+        id: 497966466617049089n
     },
     dat_insanity: {
         name: "dat_insanity",
@@ -1294,10 +1327,6 @@ export const EquicordDevs = Object.freeze({
         name: "korzi",
         id: 740966310875365416n
     },
-    davri: {
-        name: "Davri",
-        id: 457579346282938368n
-    },
     yash: {
         name: "yash",
         id: 889150838658977874n
@@ -1418,9 +1447,43 @@ export const EquicordDevs = Object.freeze({
         name: "benjas333",
         id: 456577284464443394n,
     },
+    k304: {
+        name: "k304",
+        id: 255004979637649408n
+    },
+    ELJoOker: {
+        name: "ELJoOker",
+        id: 605894319408283678n
+    },
+    penguinwokrs: {
+        name: "penguinwokrs",
+        id: 385266832136863746n
+    },
+    Kurt: {
+        name: "Kurt",
+        id: 112222963276750848n
+    },
+    heart_menace: {
+        name: "heart_menace",
+        id: 281162701303185408n
+    },
+    tie: {
+        name: "tie",
+        id: 783087994419675201n
+    },
 } satisfies Record<string, Dev>);
 
 export const TestcordDevs = /* #__PURE__*/ Object.freeze({
+    DavidHiFi: {
+        name: "DavidHiFi",
+        id: 1553713171938938891n,
+        github: "DavidHiFi"
+    },
+    Kurtzon: {
+        name: "Kurtzon Audio",
+        id: 1552878708732469258n,
+        github: "kurtzonaudio"
+    },
     sirphantom89: {
         name: "SirPhantom89",
         id: 1464279455844274188n,
@@ -1446,6 +1509,11 @@ export const TestcordDevs = /* #__PURE__*/ Object.freeze({
         name: "babystarsz",
         id: 1455985625441501209n
     },
+    soriita: {
+        name: "soriita",
+        id: 1544366048889798709n,
+        github: "Mixiruri"
+    },
     vampireslover: {
         name: "vampireslover",
         id: 1455033270709256284n
@@ -1469,8 +1537,8 @@ export const TestcordDevs = /* #__PURE__*/ Object.freeze({
         id: 1155026301791514655n
     },
     nnenaza: {
-        name: "kiara",
-        id: 1501441039418785933n,
+        name: "soriita",
+        id: 1544366048889798709n,
         github: "Mixiruri"
     },
     neoarz: {
@@ -1502,13 +1570,50 @@ export const TestcordDevs = /* #__PURE__*/ Object.freeze({
         id: 1186067973547495498n
     },
     mixi: {
-        name: "mixi",
-        id: 1517005377214873672n
-    }
-} satisfies Record<string, Dev>);
-
-// Nightcord plugin authors / placeholders for nightcord-fork-only devs
-export const NightcordDevs = /* #__PURE__*/ Object.freeze({
+        name: "soriita",
+        id: 1544366048889798709n,
+        github: "Mixiruri"
+    },
+    Leon135: {
+        name: "Leon135",
+        id: 309275452231385088n
+    },
+    Loukios: {
+        name: "Loukios",
+        id: 211461918127292416n
+    },
+    examplegit: {
+        name: "example.user",
+        id: 175411535357673473n
+    },
+    qdnx: {
+        name: "qdnx",
+        id: 1374803023506702508n
+    },
+    LOSTSTR: {
+        name: "LOSTSTR",
+        id: 681465758127226900n
+    },
+    Sharp: {
+        name: "Sharp",
+        id: 0n
+    },
+    MasuRii: {
+        name: "MasuRii",
+        id: 0n
+    },
+    lastclipped: {
+        name: "lastclipped",
+        id: 0n
+    },
+    VillainsRule: {
+        name: "VillainsRule",
+        id: 0n
+    },
+    nexpid: {
+        name: "Nexpid",
+        id: 853550207039832084n
+    },
     Nightcord: {
         name: "Nightcord",
         id: 0n
@@ -1532,6 +1637,28 @@ export const NightcordDevs = /* #__PURE__*/ Object.freeze({
     Trigger: {
         name: "Trigger",
         id: 0n
+    },
+    Aviv: {
+        name: "Aviv",
+        id: 752564054593110016n,
+        github: "ZimbaZombie"
+    },
+    Su4o: {
+        name: "Su4o",
+        id: 776159687648608316n
+    },
+    reid: {
+        name: "reid",
+        id: 1069127117247361085n
+    },
+    irritably: {
+        name: "irritably",
+        id: 928787166916640838n
+    },
+    szcx404: {
+        name: "szcx404",
+        id: 1554284154009682032n,
+        github: "szcx404"
     }
 } satisfies Record<string, Dev>);
 
@@ -1555,14 +1682,6 @@ export const EquicordDevsById = /* #__PURE__*/ (() =>
 export const TestcordDevsById = /* #__PURE__*/ (() =>
     Object.freeze(Object.fromEntries(
         Object.entries(TestcordDevs)
-            .filter(d => d[1].id !== 0n)
-            .map(([_, v]) => [v.id, v] as const)
-    ))
-)() as Record<string, Dev>;
-
-export const NightcordDevsById = /* #__PURE__*/ (() =>
-    Object.freeze(Object.fromEntries(
-        Object.entries(NightcordDevs)
             .filter(d => d[1].id !== 0n)
             .map(([_, v]) => [v.id, v] as const)
     ))

@@ -27,10 +27,12 @@ import { addMessageClickListener, addMessagePreEditListener, addMessagePreSendLi
 import { addMessagePopoverButton, removeMessagePopoverButton } from "@api/MessagePopover";
 import { addNicknameIcon, removeNicknameIcon } from "@api/NicknameIcons";
 import { PluginHealth } from "@api/PluginHealth";
-import { Settings, SettingsStore } from "@api/Settings";
+import { PluginProfiler } from "@api/PluginProfiler";
+import { PlainSettings, Settings, SettingsStore } from "@api/Settings";
 import { disableStyle, enableStyle, removeStyle } from "@api/Styles";
 import { traceFunction } from "@debug/Tracer";
 import { Logger } from "@utils/Logger";
+import { sleep } from "@utils/misc";
 import { onlyOnce } from "@utils/onlyOnce";
 import { canonicalizeFind, canonicalizeReplacement } from "@utils/patches";
 import { DefinedSettings, Patch, Plugin, PluginDef, PluginSettingDef, ReporterTestable, StartAt } from "@utils/types";
@@ -41,8 +43,9 @@ import { patches, removePatchesByPlugin } from "@webpack/patcher";
 import Plugins from "~plugins";
 export { Plugins as plugins };
 
+import { getPluginId } from "@utils/pluginIds";
+
 import { addAudioProcessor, removeAudioProcessor } from "./AudioPlayer";
-import { addGifPickerContextMenuPatch, removeGifPickerContextMenuPatch } from "./GifPickerContextMenu";
 import { addChannelToolbarButton, addHeaderBarButton, removeChannelToolbarButton, removeHeaderBarButton } from "./HeaderBar";
 import { addProfileCollection, removeProfileCollection } from "./ProfileCollections";
 import { addProfileSection, removeProfileSection } from "./ProfileSections";
@@ -57,17 +60,87 @@ export const pluginStartTimings = new Map<string, { duration: number; success: b
 let enabledPluginsSubscribedFlux = false;
 const subscribedFluxEventsPlugins = new Set<string>();
 
+function canonicalKey(p: string): string {
+    const plugin = (Plugins as any)[p];
+    if (!plugin) return p;
+    return getPluginId(plugin);
+}
+
+// isPluginEnabled is called from render paths (typing indicator, user area, every
+// message decoration guard, plugin cards) and from every plugin's dependency
+// resolution. Each call used to walk the quarantine list twice, hit the plugins
+// Proxy and then read `Settings.plugins[...]` through the Settings Proxy, so a
+// single render tick with a handful of decorations paid that cost per decoration.
+//
+// The result only depends on three things: the plugins registry (a bundle-time
+// constant), the settings object, and PluginHealth's safe-mode/quarantine state.
+// All three announce changes, so the cache is dropped there rather than polled.
+const enabledCache = new Map<string, boolean>();
+
+export function invalidatePluginEnabledCache() {
+    enabledCache.clear();
+}
+
 export function isPluginEnabled(p: string) {
-    return (
-        Plugins[p]?.required ||
-        Plugins[p]?.isDependency ||
-        Settings.plugins[p]?.enabled
-    ) ?? false;
+    const cached = enabledCache.get(p);
+    if (cached !== undefined) return cached;
+    return resolvePluginEnabled(p);
+}
+
+function resolvePluginEnabled(p: string) {
+    const plugin = (Plugins as any)[p];
+    const canonical = plugin ? getPluginId(plugin) : p;
+    // allow lookup by either canonical id or legacy name for backwards compat
+    const legacy = plugin?.name && plugin.name !== canonical ? plugin.name : (p !== canonical ? p : null);
+    const enabled = computePluginEnabled(p, plugin, canonical, legacy);
+    enabledCache.set(p, enabled);
+    return enabled;
+}
+
+function computePluginEnabled(p: string, plugin: any, canonical: string, legacy: string | null) {
+    if (plugin?.required) return true;
+    if (PluginHealth.isSafeModeEnabled()) return false;
+    if (PluginHealth.isQuarantined(canonical) || (legacy && PluginHealth.isQuarantined(legacy))) return false;
+
+    if (plugin?.isDependency) return true;
+
+    // Check raw plain settings first so we do not trigger default value generation
+    const raw = PlainSettings?.plugins as Record<string, any> | undefined;
+    if (raw) {
+        if (raw[canonical]?.enabled !== undefined) return raw[canonical].enabled;
+        if (legacy && raw[legacy]?.enabled !== undefined) return raw[legacy].enabled;
+        if (plugin?.aliases) {
+            for (const alias of plugin.aliases) {
+                if (raw[alias]?.enabled !== undefined) return raw[alias].enabled;
+            }
+        }
+    }
+
+    const canonicalEnabled = Settings.plugins[canonical]?.enabled;
+    if (canonicalEnabled !== undefined) return canonicalEnabled;
+
+    if (legacy && Settings.plugins[legacy]?.enabled !== undefined) {
+        return Settings.plugins[legacy].enabled;
+    }
+
+    if (plugin?.aliases) {
+        for (const alias of plugin.aliases) {
+            if (Settings.plugins[alias]?.enabled !== undefined) {
+                return Settings.plugins[alias].enabled;
+            }
+        }
+    }
+
+    return false;
 }
 export function isPluginRequired(p: string) {
     return (
-        Plugins[p]?.required
+        (Plugins as any)[p]?.required
     ) ?? false;
+}
+export function getEffectivePluginSettingsKey(p: string): string {
+    const plugin = (Plugins as any)[p];
+    return plugin ? getPluginId(plugin) : p;
 }
 
 export function isSettingHidden(settings: DefinedSettings, setting: PluginSettingDef) {
@@ -137,9 +210,40 @@ export function pluginRequiresRestart(p: Plugin) {
     );
 }
 
-export const startAllPlugins = traceFunction("startAllPlugins", function startAllPlugins(target: StartAt) {
+function isDeferrablePlugin(p: Plugin): boolean {
+    if (!p || p.required || p.name.endsWith("API")) return false;
+    if (p.flux) return false;
+    if (p.patches?.length) return false;
+    if (p.start) return false;
+    return true;
+}
+
+export const startAllPlugins = traceFunction("startAllPlugins", async function startAllPlugins(target: StartAt) {
     logger.info(`Starting plugins (stage ${target})`);
+
+    // Safe Mode and quarantine state live in DataStore (async). They must be
+    // loaded before any isPluginEnabled() call decides whether a plugin may
+    // start — otherwise the boot pass would see stale defaults and start
+    // plugins the user meant to keep disabled. Both loads are memoized.
+    await PluginHealth.loadSafeMode();
+    await PluginHealth.loadQuarantine();
+
+    // Activate profiler auto-instrumentation before any plugin runs so timers
+    // and listeners created during start() are attributed. Idempotent, so
+    // calling it on every stage is safe.
+    PluginProfiler.init();
+
     const pending: Array<() => void> = [];
+    const deferred: Array<() => void> = [];
+    const deferIdleStarts = target === StartAt.WebpackReady
+        && (Settings.plugins as Record<string, any>).TestcordHelper?.deferredStartup === true;
+    const dependedUpon = new Set<string>();
+    if (deferIdleStarts) {
+        for (const name in Plugins) {
+            if (!isPluginEnabled(name)) continue;
+            for (const dep of Plugins[name].dependencies ?? []) dependedUpon.add(dep);
+        }
+    }
     for (const name in Plugins) {
         if (isPluginEnabled(name) && (!IS_REPORTER || isReporterTestable(Plugins[name], ReporterTestable.Start))) {
             const p = Plugins[name];
@@ -147,11 +251,35 @@ export const startAllPlugins = traceFunction("startAllPlugins", function startAl
             const startAt = p.startAt ?? StartAt.WebpackReady;
             if (startAt !== target) continue;
 
-            pending.push(() => startPlugin(Plugins[name]));
+            const run = () => startPlugin(Plugins[name]);
+            if (deferIdleStarts && isDeferrablePlugin(p) && !dependedUpon.has(p.name)) {
+                deferred.push(() => { if (isPluginEnabled(name)) run(); });
+            } else {
+                pending.push(run);
+            }
         }
     }
+    // Time-sliced: with hundreds of plugins a tight start loop blocks the main
+    // thread for seconds right when Discord paints its first screens. Handing
+    // control back to the event loop every ~12ms keeps startup interactive.
+    let lastSlice = performance.now();
     for (const start of pending) {
         try { start(); } catch (e) { logger.error("Failed to start plugin", e); }
+        if (performance.now() - lastSlice > 12) {
+            await sleep(0);
+            lastSlice = performance.now();
+        }
+    }
+    if (deferred.length > 0) {
+        const flush = () => {
+            for (const start of deferred) {
+                try { start(); } catch (e) { logger.error("Failed to start deferred plugin", e); }
+            }
+            deferred.length = 0;
+        };
+        const ric = (globalThis as any).requestIdleCallback as ((cb: () => void, opts?: { timeout: number; }) => void) | undefined;
+        if (typeof ric === "function") ric(flush, { timeout: 3000 });
+        else setTimeout(flush, 1000);
     }
 
     // After the final "WebpackReady" start pass, publish the set of enabled
@@ -164,17 +292,26 @@ export const startAllPlugins = traceFunction("startAllPlugins", function startAl
 });
 
 export function startDependenciesRecursive(p: Plugin) {
-    const settings = Settings.plugins;
+    const settings = Settings.plugins as Record<string, any>;
     let restartNeeded = false;
     const failures: string[] = [];
 
     p.dependencies?.forEach(d => {
-        if (!settings[d].enabled) {
-            const dep = Plugins[d];
+        const dep = (Plugins as any)[d];
+        const canonicalD = dep ? getPluginId(dep) : d;
+        const enabled = isPluginEnabled(canonicalD) || isPluginEnabled(d);
+        if (!enabled) {
+            if (!dep) {
+                logger.warn(`Plugin ${p.name} has unresolved dependency ${d}`);
+                return;
+            }
             startDependenciesRecursive(dep);
 
             // If the plugin has patches, don't start the plugin, just enable it.
-            settings[d].enabled = true;
+            (Settings.plugins as any)[canonicalD] = (Settings.plugins as any)[canonicalD] ?? {};
+            (Settings.plugins as any)[canonicalD].enabled = true;
+            (Settings.plugins as any)[d] = (Settings.plugins as any)[d] ?? {};
+            (Settings.plugins as any)[d].enabled = true;
             dep.isDependency = true;
 
             if (pluginRequiresRestart(dep)) {
@@ -191,17 +328,27 @@ export function startDependenciesRecursive(p: Plugin) {
     return { restartNeeded, failures };
 }
 
+// Original (user-authored) flux handlers, kept separate from the profiling
+// wrappers installed on p.flux. Without this, every subscribe/unsubscribe
+// cycle would wrap the previous wrapper again — stacking nested wrappers and
+// inflating profiler CPU/call counts.
+const originalFluxHandlers = new WeakMap<Plugin, Record<string, (...args: any[]) => any>>();
+
 export function subscribePluginFluxEvents(p: Plugin, fluxDispatcher: typeof FluxDispatcher) {
     if (p.flux && !subscribedFluxEventsPlugins.has(p.name) && (!IS_REPORTER || isReporterTestable(p, ReporterTestable.FluxEvents))) {
         subscribedFluxEventsPlugins.add(p.name);
 
         logger.debug("Subscribing to flux events of plugin", p.name);
-        for (const [event, handler] of Object.entries(p.flux)) {
-            if (p.name === "Encryptcord" && event === "MESSAGE_CREATE") continue;
+        const originals = originalFluxHandlers.get(p) ?? {};
+        for (const [event, currentHandler] of Object.entries(p.flux)) {
+            // p.flux[event] may already be a wrapper from a previous subscribe
+            // cycle; always wrap the original handler, never the wrapper.
+            const original = originals[event] ?? currentHandler;
+            originals[event] = original;
 
             const wrappedHandler = p.flux[event] = function () {
                 try {
-                    const res = handler!.apply(p, arguments as any);
+                    const res = PluginProfiler.profileExecution(p.name, `flux:${event}`, () => original.apply(p, arguments as any));
                     return res instanceof Promise
                         ? res.catch(e => {
                             logger.error(`${p.name}: Error while handling ${event}\n`, e);
@@ -216,6 +363,7 @@ export function subscribePluginFluxEvents(p: Plugin, fluxDispatcher: typeof Flux
 
             fluxDispatcher.subscribe(event as FluxEvents, wrappedHandler);
         }
+        originalFluxHandlers.set(p, originals);
     }
 }
 
@@ -252,8 +400,11 @@ export const startPlugin = traceFunction("startPlugin", function startPlugin(p: 
         renderChatBarButton,
         // Custom
         renderNicknameIcon, headerBarButton, audioProcessor, userAreaButton, renderProfileCollection, chatBarButtonWrapper,
-        renderProfileSection, gifPickerContextMenu
+        renderProfileSection
     } = p;
+
+    PluginProfiler.instrumentPlugin(p);
+    PluginProfiler.registerPlugin(name);
 
     if (p.start) {
         logger.info("Starting plugin", name);
@@ -262,10 +413,15 @@ export const startPlugin = traceFunction("startPlugin", function startPlugin(p: 
             return finish(false);
         }
         try {
-            p.start();
-        } catch (e) {
+            PluginProfiler.profileExecution(name, "start", () => p.start!());
+        } catch (e: any) {
             logger.error(`Failed to start ${name}\n`, e);
             PluginHealth.recordRuntimeError(name, "start", e);
+            PluginHealth.recordCrash({
+                pluginName: name,
+                reason: `Failed to start: ${e?.message ?? String(e)}`,
+                stack: e?.stack
+            });
             return finish(false);
         }
     }
@@ -324,7 +480,6 @@ export const startPlugin = traceFunction("startPlugin", function startPlugin(p: 
     if (renderProfileCollection) addProfileCollection(name, renderProfileCollection.render, renderProfileCollection.priority);
     if (chatBarButtonWrapper) addChatBarButtonWrapper(name, chatBarButtonWrapper.wrapper, chatBarButtonWrapper.priority);
     if (renderProfileSection) addProfileSection(name, renderProfileSection.render, renderProfileSection.priority);
-    if (gifPickerContextMenu) addGifPickerContextMenuPatch(name, gifPickerContextMenu);
 
     return finish(true);
 }, p => `startPlugin ${p.name}`);
@@ -337,7 +492,7 @@ export const stopPlugin = traceFunction("stopPlugin", function stopPlugin(p: Plu
         renderChatBarButton,
         // Custom
         renderNicknameIcon, headerBarButton, audioProcessor, userAreaButton, renderProfileCollection, chatBarButtonWrapper,
-        renderProfileSection, gifPickerContextMenu
+        renderProfileSection
     } = p;
 
     if (p.stop) {
@@ -347,7 +502,7 @@ export const stopPlugin = traceFunction("stopPlugin", function stopPlugin(p: Plu
             return false;
         }
         try {
-            p.stop();
+            PluginProfiler.profileExecution(name, "stop", () => p.stop!());
         } catch (e) {
             logger.error(`Failed to stop ${name}\n`, e);
             PluginHealth.recordRuntimeError(name, "stop", e);
@@ -411,14 +566,40 @@ export const stopPlugin = traceFunction("stopPlugin", function stopPlugin(p: Plu
     if (renderProfileCollection) removeProfileCollection(name);
     if (chatBarButtonWrapper) removeChatBarButtonWrapper(name);
     if (renderProfileSection) removeProfileSection(name);
-    if (gifPickerContextMenu) removeGifPickerContextMenuPatch(name);
 
     return true;
 }, p => `stopPlugin ${p.name}`);
 
 export const initPluginManager = onlyOnce(function init() {
-    const pluginsValues = Object.values(Plugins);
-    const settings = Settings.plugins;
+    const pluginsValues = Object.values(Plugins) as Plugin[];
+    const settings = Settings.plugins as Record<string, any>;
+
+    // Migrate legacy name-keyed settings to stable ids.
+    // This runs once at startup; it copies enabled + per-plugin settings
+    // from the old `name` key to the new `id` key if the latter is empty.
+    for (const p of pluginsValues) {
+        const cid = getPluginId(p);
+        if (p.settings) p.settings.pluginName = cid;
+
+        if (cid !== p.name) {
+            const raw = PlainSettings?.plugins as Record<string, any> | undefined;
+            const legacy = raw?.[p.name];
+            const canonical = raw?.[cid];
+            if (legacy && !canonical) {
+                (Settings.plugins as any)[cid] = { ...legacy };
+            } else if (legacy && canonical && legacy.enabled !== undefined && canonical.enabled === undefined) {
+                (Settings.plugins as any)[cid].enabled = legacy.enabled;
+            }
+        }
+        // alias migration
+        for (const alias of (p as any).aliases ?? []) {
+            const raw = PlainSettings?.plugins as Record<string, any> | undefined;
+            const aVal = raw?.[alias];
+            if (aVal && !raw?.[cid]) {
+                (Settings.plugins as any)[cid] = { ...aVal };
+            }
+        }
+    }
 
     const pluginKeysToBind: Array<keyof PluginDef & `${"on" | "render"}${string}`> = [
         "onBeforeMessageEdit", "onBeforeMessageSend", "onMessageClick",
@@ -449,7 +630,11 @@ export const initPluginManager = onlyOnce(function init() {
                 return;
             }
 
-            settings[d].enabled = true;
+            const cid = getPluginId(dep);
+            (Settings.plugins as any)[cid] = (Settings.plugins as any)[cid] ?? {};
+            (Settings.plugins as any)[cid].enabled = true;
+            (Settings.plugins as any)[d] = (Settings.plugins as any)[d] ?? {};
+            (Settings.plugins as any)[d].enabled = true;
             dep.isDependency = true;
         });
 
@@ -470,7 +655,6 @@ export const initPluginManager = onlyOnce(function init() {
         if (p.renderProfileCollection) neededApiPlugins.add("ProfileCollectionsAPI");
         if (p.chatBarButtonWrapper) neededApiPlugins.add("ChatInputButtonAPI");
         if (p.renderProfileSection) neededApiPlugins.add("ProfileSectionsAPI");
-        if (p.gifPickerContextMenu) neededApiPlugins.add("ExtraContextMenusAPI");
 
         for (const key of pluginKeysToBind) {
             p[key] &&= (p[key] as Function).bind(p) as any;
@@ -484,12 +668,13 @@ export const initPluginManager = onlyOnce(function init() {
 
     for (const p of pluginsValues) {
         if (p.settings) {
-            p.settings.pluginName = p.name;
+            p.settings.pluginName = getPluginId(p);
 
             if (isPluginEnabled(p.name)) {
+                const keyBase = getPluginId(p);
                 for (const [key, def] of Object.entries(p.settings.def)) {
                     if (def.onChange)
-                        SettingsStore.addChangeListener(`plugins.${p.name}.${key}`, def.onChange);
+                        SettingsStore.addChangeListener(`plugins.${keyBase}.${key}`, def.onChange);
                 }
             }
         }
@@ -502,4 +687,11 @@ export const initPluginManager = onlyOnce(function init() {
             }
         }
     }
+
+    // Keep the isPluginEnabled memo honest. Every `enabled` write, safe-mode flip
+    // and quarantine change lands here; nothing else can change the answer.
+    SettingsStore.addGlobalChangeListener((_, path) => {
+        if (path === "" || path.startsWith("plugins.")) invalidatePluginEnabledCache();
+    });
+    PluginHealth.subscribe(invalidatePluginEnabledCache);
 });

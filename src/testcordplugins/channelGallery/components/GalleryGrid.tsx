@@ -39,8 +39,11 @@ export function GalleryGrid(props: {
     onRetry(): void;
     onLoadMore(): void;
     onSelect(index: number): void;
+    selectedKeys?: Set<string>;
+    onToggleSelect?(index: number): void;
+    isSelectionMode?: boolean;
 }) {
-    const { items, showCaptions, isLoading, hasMore, error, onRetry, onLoadMore, onSelect } = props;
+    const { items, showCaptions, isLoading, hasMore, error, onRetry, onLoadMore, onSelect, selectedKeys, onToggleSelect, isSelectionMode: propSelectionMode } = props;
 
     const scrollRef = useRef<HTMLDivElement>(null);
     const [viewport, setViewport] = useState({ width: 0, height: 0, scrollTop: 0 });
@@ -49,13 +52,28 @@ export function GalleryGrid(props: {
         const el = scrollRef.current;
         if (!el) return;
 
+        let frameId: number | null = null;
+        const updateSize = () => {
+            if (!el) return;
+            setViewport(v => {
+                const w = el.clientWidth;
+                const h = el.clientHeight;
+                if (v.width === w && v.height === h) return v;
+                return { ...v, width: w, height: h };
+            });
+        };
+
         const ro = new ResizeObserver(() => {
-            setViewport(v => ({ ...v, width: el.clientWidth, height: el.clientHeight }));
+            if (frameId) cancelAnimationFrame(frameId);
+            frameId = requestAnimationFrame(updateSize);
         });
         ro.observe(el);
-        setViewport(v => ({ ...v, width: el.clientWidth, height: el.clientHeight }));
+        updateSize();
 
-        return () => ro.disconnect();
+        return () => {
+            if (frameId) cancelAnimationFrame(frameId);
+            ro.disconnect();
+        };
     }, []);
 
     const usableWidth = Math.max(1, viewport.width - PADDING * 2);
@@ -75,7 +93,6 @@ export function GalleryGrid(props: {
         };
     }, [columns, items.length, rowHeight, rows, viewport.height, viewport.scrollTop]);
 
-    // Infinite load: observe a sentinel element near the bottom.
     const sentinelRef = useRef<HTMLDivElement>(null);
     useEffect(() => {
         const root = scrollRef.current;
@@ -101,7 +118,10 @@ export function GalleryGrid(props: {
             className="vc-channel-gallery-scroll"
             onScroll={e => {
                 const el = e.currentTarget;
-                setViewport(v => ({ ...v, scrollTop: el.scrollTop }));
+                setViewport(v => {
+                    if (v.scrollTop === el.scrollTop) return v;
+                    return { ...v, scrollTop: el.scrollTop };
+                });
             }}
             style={{
                 height: "100%",
@@ -115,11 +135,22 @@ export function GalleryGrid(props: {
                     const idx = startIndex + i;
                     const row = Math.floor(idx / columns);
                     const col = idx % columns;
+                    const isSelected = selectedKeys?.has(item.key) ?? false;
+                    const isSelectionMode = propSelectionMode ?? ((selectedKeys?.size ?? 0) > 0);
 
                     return (
                         <button
                             key={item.key}
-                            onClick={() => onSelect(idx)}
+                            className="vc-channel-gallery-thumb-card"
+                            onClick={e => {
+                                if (e.ctrlKey || e.metaKey || isSelectionMode) {
+                                    e.preventDefault();
+                                    onToggleSelect?.(idx);
+                                } else {
+                                    onSelect(idx);
+                                }
+                            }}
+                            title={item.filename ?? "Image"}
                             style={{
                                 position: "absolute",
                                 left: col * (cell + GAP),
@@ -129,7 +160,10 @@ export function GalleryGrid(props: {
                                 padding: 0,
                                 border: "none",
                                 background: "transparent",
-                                cursor: "pointer"
+                                cursor: "pointer",
+                                outline: isSelected ? "2px solid var(--brand-500)" : "none",
+                                outlineOffset: isSelected ? -2 : 0,
+                                borderRadius: 10
                             }}
                         >
                             <div
@@ -138,15 +172,54 @@ export function GalleryGrid(props: {
                                     height: cell,
                                     borderRadius: 10,
                                     overflow: "hidden",
-                                    background: "var(--background-secondary)"
+                                    background: "var(--background-secondary)",
+                                    position: "relative",
+                                    boxShadow: isSelected ? "0 0 0 2px var(--brand-500) inset" : "none"
                                 }}
                             >
                                 <img
                                     src={getThumbUrl(item, thumbSize)}
                                     alt={item.filename ?? "Image"}
                                     loading="lazy"
-                                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", opacity: isSelected ? 0.92 : 1 }}
                                 />
+                                {onToggleSelect && isSelectionMode && (
+                                    <span
+                                        role="checkbox"
+                                        aria-checked={isSelected}
+                                        aria-label={isSelected ? "Deselect image" : "Select image"}
+                                        onClick={e => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            onToggleSelect(idx);
+                                        }}
+                                        style={{
+                                            position: "absolute",
+                                            top: 6,
+                                            left: 6,
+                                            width: 22,
+                                            height: 22,
+                                            borderRadius: 6,
+                                            background: isSelected ? "var(--brand-500)" : "rgba(0,0,0,0.55)",
+                                            border: isSelected ? "2px solid var(--brand-500)" : "2px solid rgba(255,255,255,0.9)",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                            cursor: "pointer",
+                                            backdropFilter: "blur(2px)",
+                                            boxSizing: "border-box",
+                                            zIndex: 2,
+                                            animation: "vc-gallery-fade-in 0.15s ease both",
+                                            transition: "background-color 0.15s ease, border-color 0.15s ease, transform 0.1s ease"
+                                        }}
+                                    >
+                                        {isSelected && (
+                                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                                <path d="M2.5 6L4.8 8.3L9.5 3.3" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                            </svg>
+                                        )}
+                                    </span>
+                                )}
                             </div>
                             {showCaptions && item.filename && (
                                 <div

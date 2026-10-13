@@ -17,12 +17,12 @@
 */
 
 import { app } from "electron";
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
 const suffix = IS_DEV ? "dev" : "";
 
-export const DATA_DIR = process.env.EQUICORD_USER_DATA_DIR ?? (
+export const DATA_DIR = process.env.TESTCORD_USER_DATA_DIR ?? process.env.EQUICORD_USER_DATA_DIR ?? (
     process.env.DISCORD_USER_DATA_DIR
         ? join(process.env.DISCORD_USER_DATA_DIR, "..", "TestCordData", suffix)
         : join(app.getPath("userData"), "..", "TestCord", suffix)
@@ -63,16 +63,13 @@ if (IS_DEV) {
     }
 
     if (!migrated) {
-        setTimeout(() => {
-            try {
-                if (existsSync(settings)) copyFileSync(settings, SETTINGS_FILE);
-                if (existsSync(quickCss)) copyFileSync(quickCss, QUICK_CSS_PATH);
-                writeFileSync(DEV_MIGRATED, "migrated");
-                app.relaunch();
-                app.exit(0);
-            } catch (err) {
-                console.error("[Testcord] Failed to copy prod data:", err);
-            }
-        }, 5000);
+        try {
+            mkdirSync(SETTINGS_DIR, { recursive: true });
+            if (existsSync(settings)) copyFileSync(settings, SETTINGS_FILE);
+            if (existsSync(quickCss)) copyFileSync(quickCss, QUICK_CSS_PATH);
+            writeFileSync(DEV_MIGRATED, "migrated");
+        } catch (err) {
+            console.error("[Testcord] Failed to copy prod data:", err);
+        }
     }
 }

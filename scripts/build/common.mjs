@@ -58,8 +58,38 @@ if (!IS_COMPANION_TEST && process.argv.includes("--companion-test"))
 
 export const IS_UPDATER_DISABLED = process.argv.includes("--disable-updater");
 export const gitHash =
+    process.env.TESTCORD_HASH ||
     process.env.EQUICORD_HASH ||
     execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
+
+function currentGitBranch() {
+    try {
+        const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+            encoding: "utf-8",
+        }).trim();
+        if (branch !== "HEAD") return branch;
+    } catch {
+        return "";
+    }
+    // detached (or unborn) HEAD: a local branch pointing at the built commit names
+    // the build; for-each-ref refs/heads avoids git 2.55's "(HEAD detached ...)"
+    // pseudo-branch that git branch --points-at lists first
+    try {
+        const branches = execSync('git for-each-ref refs/heads --points-at HEAD --format="%(refname:short)"', {
+            encoding: "utf-8",
+        }).trim();
+        return branches.split("\n")[0]?.trim() || "";
+    } catch {
+        return "";
+    }
+}
+
+export const gitBranch =
+    process.env.TESTCORD_BRANCH ||
+    process.env.EQUICORD_BRANCH ||
+    currentGitBranch() ||
+    process.env.GITHUB_REF_NAME ||
+    "dev";
 
 export const banner = {
     js: `
@@ -111,15 +141,15 @@ export async function resolvePluginName(base, dirent) {
         const content = dirent.isFile()
             ? await readFile(fullPath, "utf-8")
             : await (async () => {
-                  for (const file of ["index.ts", "index.tsx"]) {
-                      try {
-                          return await readFile(join(fullPath, file), "utf-8");
-                      } catch {
-                          continue;
-                      }
-                  }
-                  return null;
-              })();
+                for (const file of ["index.ts", "index.tsx"]) {
+                    try {
+                        return await readFile(join(fullPath, file), "utf-8");
+                    } catch {
+                        continue;
+                    }
+                }
+                return null;
+            })();
 
         if (!content) return null;
 
@@ -212,6 +242,7 @@ export const globPlugins = (kind) => ({
                         const excluded =
                             (target === "dev" && !IS_DEV) ||
                             (target === "web" && kind === "discordDesktop") ||
+                            (target === "browser" && kind !== "web") ||
                             (target === "desktop" && kind === "web") ||
                             (target === "discordDesktop" &&
                                 kind !== "discordDesktop") ||
@@ -232,21 +263,92 @@ export const globPlugins = (kind) => ({
                     }
 
                     const folderName = `src/${dir}/${fileName}`;
-
                     const mod = `p${i}`;
                     code += `import ${mod} from "./${dir}/${fileName.replace(
                         /\.tsx?$/,
                         "",
                     )}";\n`;
                     pluginsCode += `[${mod}.name]:${mod},\n`;
-                    metaCode += `[${mod}.name]:${JSON.stringify({
+                    // Expose stable id in PluginMeta for tooling and migrations
+                    metaCode += `[${mod}.name]:{...${JSON.stringify({
                         folderName,
                         userPlugin,
-                    })},\n`;
+                    })},id:(${mod}.id??${mod}.name),aliases:(${mod}.aliases??[])},\n`;
                     i++;
                 }
             }
-            code += `export default {${pluginsCode}};export const PluginMeta={${metaCode}};export const ExcludedPlugins={${excludedCode}};`;
+            code += `
+const rawPlugins = {${pluginsCode}};
+const pluginLookup = new Map();
+for (const p of Object.values(rawPlugins)) {
+    if (p.id) {
+        pluginLookup.set(p.id, p);
+        pluginLookup.set(p.id.toLowerCase(), p);
+    }
+    if (p.name) {
+        pluginLookup.set(p.name, p);
+        pluginLookup.set(p.name.toLowerCase(), p);
+    }
+    if (Array.isArray(p.aliases)) {
+        for (const a of p.aliases) {
+            pluginLookup.set(a, p);
+            pluginLookup.set(a.toLowerCase(), p);
+        }
+    }
+}
+const plugins = new Proxy(rawPlugins, {
+    get(target, prop) {
+        if (typeof prop !== "string" || prop in target) return target[prop];
+        if (prop === "then") return undefined;
+        return pluginLookup.get(prop) ?? pluginLookup.get(prop.toLowerCase());
+    },
+    has(target, prop) {
+        if (typeof prop !== "string" || prop in target) return true;
+        return pluginLookup.has(prop) || pluginLookup.has(prop.toLowerCase());
+    },
+    ownKeys(target) {
+        return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+        return Reflect.getOwnPropertyDescriptor(target, prop);
+    }
+});
+export default plugins;
+
+const rawMeta = {${metaCode}};
+const metaLookup = new Map();
+for (const [name, meta] of Object.entries(rawMeta)) {
+    metaLookup.set(name, meta);
+    metaLookup.set(name.toLowerCase(), meta);
+    if (meta.id) {
+        metaLookup.set(meta.id, meta);
+        metaLookup.set(meta.id.toLowerCase(), meta);
+    }
+    if (Array.isArray(meta.aliases)) {
+        for (const a of meta.aliases) {
+            metaLookup.set(a, meta);
+            metaLookup.set(a.toLowerCase(), meta);
+        }
+    }
+}
+export const PluginMeta = new Proxy(rawMeta, {
+    get(target, prop) {
+        if (typeof prop !== "string" || prop in target) return target[prop];
+        return metaLookup.get(prop) ?? metaLookup.get(prop.toLowerCase());
+    },
+    has(target, prop) {
+        if (typeof prop !== "string" || prop in target) return true;
+        return metaLookup.has(prop) || metaLookup.has(prop.toLowerCase());
+    },
+    ownKeys(target) {
+        return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+        return Reflect.getOwnPropertyDescriptor(target, prop);
+    }
+});
+export const ExcludedPlugins = {${excludedCode}};
+`;
 
             return {
                 contents: code,
@@ -277,6 +379,23 @@ export const gitHashPlugin = {
 /**
  * @type {import("esbuild").Plugin}
  */
+export const gitBranchPlugin = {
+    name: "git-branch-plugin",
+    setup: (build) => {
+        const filter = /^~git-branch$/;
+        build.onResolve({ filter }, (args) => ({
+            namespace: "git-branch",
+            path: args.path,
+        }));
+        build.onLoad({ filter, namespace: "git-branch" }, () => ({
+            contents: `export default ${JSON.stringify(gitBranch)}`,
+        }));
+    },
+};
+
+/**
+ * @type {import("esbuild").Plugin}
+ */
 export const gitRemotePlugin = {
     name: "git-remote-plugin",
     setup: (build) => {
@@ -286,7 +405,7 @@ export const gitRemotePlugin = {
             path: args.path,
         }));
         build.onLoad({ filter, namespace: "git-remote" }, async () => {
-            let remote = process.env.EQUICORD_REMOTE;
+            let remote = process.env.TESTCORD_REMOTE || process.env.EQUICORD_REMOTE;
             if (!remote) {
                 const res = await promisify(exec)("git remote get-url origin", {
                     encoding: "utf-8",
@@ -442,8 +561,11 @@ export const commonOpts = {
     sourcemap: watch ? "inline" : "external",
     legalComments: "linked",
     banner,
-    plugins: [fileUrlPlugin, gitHashPlugin, gitRemotePlugin, stylePlugin],
-    external: ["~plugins", "~git-hash", "~git-remote", "/assets/*"],
+    loader: {
+        ".html": "text",
+    },
+    plugins: [fileUrlPlugin, gitHashPlugin, gitBranchPlugin, gitRemotePlugin, stylePlugin],
+    external: ["~plugins", "~git-hash", "~git-branch", "~git-remote", "/assets/*"],
     inject: [join(dirname(fileURLToPath(import.meta.url)), "inject/react.mjs")],
     jsx: "transform",
     jsxFactory: "VencordCreateElement",

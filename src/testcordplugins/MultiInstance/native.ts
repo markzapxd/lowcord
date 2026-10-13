@@ -4,10 +4,12 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// TODO: token signing in doesnt work
-import { app, BrowserWindow, nativeImage, session, shell } from "electron";
+import { THEMES_DIR } from "@main/utils/constants";
+import { ensureSafePath } from "@main/utils/ensureSafePath";
+import { app, BrowserWindow, nativeImage, net, session, shell } from "electron";
 import iconData from "file://../../../browser/icon.png?base64";
 import { join } from "path";
+import { pathToFileURL } from "url";
 
 export interface NativeResult {
     ok: boolean;
@@ -165,7 +167,19 @@ function isAllowedExternalUrl(url: string) {
     }
 }
 
-function removeBlockingHeaders(responseHeaders: Record<string, string[]> | undefined) {
+const CORS_PASSTHROUGH_DOMAINS = [
+    "api.groq.com",
+    "api.openai.com",
+    "badges.equicord.org",
+    "spotify-lyrics-api-pi.vercel.app",
+    "api.cord.cat",
+];
+
+function removeBlockingHeaders(
+    responseHeaders: Record<string, string[]> | undefined,
+    resourceType?: string,
+    url?: string
+) {
     const headers = { ...(responseHeaders ?? {}) };
 
     for (const key of Object.keys(headers)) {
@@ -181,15 +195,79 @@ function removeBlockingHeaders(responseHeaders: Record<string, string[]> | undef
         }
     }
 
+    if (resourceType === "stylesheet") {
+        let found = false;
+        for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === "content-type") {
+                headers[key] = ["text/css"];
+                found = true;
+            }
+        }
+        if (!found) {
+            headers["content-type"] = ["text/css"];
+        }
+    }
+
+    if (url && CORS_PASSTHROUGH_DOMAINS.some(d => url.startsWith(`https://${d}/`))) {
+        const hasOrigin = Object.keys(headers).some(k => k.toLowerCase() === "access-control-allow-origin");
+        if (!hasOrigin) {
+            headers["access-control-allow-origin"] = ["*"];
+            headers["access-control-allow-headers"] = ["*"];
+            headers["access-control-allow-methods"] = ["GET, POST, PUT, DELETE, OPTIONS"];
+        }
+    }
+
     return headers;
 }
 
+function handleCustomProtocol(request: { url: string; }, scheme: string) {
+    let url = decodeURI(request.url).slice(`${scheme}://`.length).replace(/\?v=\d+$/, "");
+
+    if (url.endsWith("/")) url = url.slice(0, -1);
+
+    if (url.startsWith("/themes/")) {
+        const theme = url.slice("/themes/".length);
+
+        const safeUrl = ensureSafePath(THEMES_DIR, theme);
+        if (!safeUrl) {
+            return new Response(null, {
+                status: 404
+            });
+        }
+
+        return net.fetch(pathToFileURL(safeUrl).toString());
+    }
+
+    switch (url) {
+        case "renderer.js.map":
+        case "preload.js.map":
+        case "patcher.js.map":
+        case "main.js.map":
+            return net.fetch(pathToFileURL(join(__dirname, url)).toString());
+        default:
+            return new Response(null, {
+                status: 404
+            });
+    }
+}
+
+function registerProtocols(ses: Electron.Session) {
+    if (!ses.protocol.isProtocolHandled("vencord")) {
+        ses.protocol.handle("vencord", req => handleCustomProtocol(req, "vencord"));
+    }
+    if (!ses.protocol.isProtocolHandled("equicord")) {
+        ses.protocol.handle("equicord", req => handleCustomProtocol(req, "equicord"));
+    }
+}
+
 function configureSession(partition: string, ses: Electron.Session) {
+    registerProtocols(ses);
+
     if (configuredSessions.has(partition)) return;
     configuredSessions.add(partition);
 
     ses.webRequest.onHeadersReceived((details, callback) => {
-        callback({ responseHeaders: removeBlockingHeaders(details.responseHeaders) });
+        callback({ responseHeaders: removeBlockingHeaders(details.responseHeaders, details.resourceType, details.url) });
     });
 
     ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
@@ -347,66 +425,62 @@ export async function openInstance(
         if (token && !blockExternalTokenAccess) {
             const cleanToken = token.replace(/^["'\s]+|["'\s]+$/g, "");
             if (cleanToken) {
-                const targetTokenValue = JSON.stringify(cleanToken);
+                // Discord reads localStorage.token only at boot to open the gateway,
+                // and it neuters window.localStorage on its own pages. The reliable way
+                // to log in with a token is therefore: write the (single) JSON-encoded
+                // token through a throwaway iframe's localStorage, then reload so the
+                // client boots with it. Run once per window to avoid a reload loop.
                 const injectTokenScript = `
                     (function() {
                         try {
-                            const clean = ${JSON.stringify(cleanToken)};
-                            const formattedToken = ${JSON.stringify(targetTokenValue)};
-                            const isLoginPage = window.location.pathname.includes("/login") || window.location.pathname.includes("/register");
+                            const token = ${JSON.stringify(cleanToken)};
+                            const stored = JSON.stringify(token);
 
-                            try {
-                                window.localStorage.setItem("token", formattedToken);
-                                window.localStorage.token = formattedToken;
-                            } catch(e) {}
-
-                            let ticks = 0;
-                            const interval = setInterval(() => {
+                            function writeToken() {
                                 try {
-                                    window.localStorage.setItem("token", formattedToken);
-                                    window.localStorage.token = formattedToken;
-
-                                    const iframe = document.querySelector("iframe[data-token-inject]");
-                                    if (!iframe) {
-                                        const f = document.createElement("iframe");
-                                        f.setAttribute("data-token-inject", "true");
-                                        f.style.display = "none";
-                                        document.body.appendChild(f);
-                                        if (f.contentWindow) {
-                                            f.contentWindow.localStorage.setItem("token", formattedToken);
-                                        }
+                                    const f = document.createElement("iframe");
+                                    f.style.display = "none";
+                                    document.body.appendChild(f);
+                                    if (f.contentWindow) {
+                                        f.contentWindow.localStorage.setItem("token", stored);
+                                        f.contentWindow.localStorage.token = stored;
                                     }
+                                    f.remove();
+                                } catch(e) {}
+                            }
 
-                                    const wp = window.Vencord?.Webpack || (window).VencordMain?.Webpack;
-                                    if (wp) {
-                                        const auth = wp.findByProps("loginToken");
-                                        if (auth && typeof auth.loginToken === "function") {
-                                            auth.loginToken({ token: clean });
-                                            clearInterval(interval);
-                                            return;
-                                        }
-                                        const tokenStore = wp.findByProps("getToken", "setToken");
-                                        if (tokenStore && typeof tokenStore.setToken === "function") {
-                                            tokenStore.setToken(clean);
-                                            clearInterval(interval);
-                                            return;
-                                        }
+                            function trySetToken() {
+                                try {
+                                    const wp = window.Vencord?.Webpack;
+                                    const store = wp?.findByProps?.("getToken", "setToken");
+                                    if (store && typeof store.setToken === "function") {
+                                        store.setToken(token);
+                                        return true;
                                     }
                                 } catch(e) {}
+                                return false;
+                            }
 
-                                ticks++;
-                                if (ticks >= 40) {
-                                    clearInterval(interval);
-                                    if (window.location.pathname.includes("/login")) {
-                                        window.location.href = "https://${domain}/channels/@me";
-                                    }
-                                }
+                            writeToken();
+                            let ticks = 0;
+                            const interval = setInterval(() => {
+                                writeToken();
+                                trySetToken();
+                                if (++ticks >= 20) clearInterval(interval);
                             }, 50);
+
+                            setTimeout(() => {
+                                clearInterval(interval);
+                                window.location.reload();
+                            }, 1200);
                         } catch(e) {}
                     })();
                 `;
 
+                let tokenInjected = false;
                 webContents.on("dom-ready", () => {
+                    if (tokenInjected) return;
+                    tokenInjected = true;
                     webContents.executeJavaScript(injectTokenScript).catch(() => { });
                 });
             }
@@ -424,7 +498,7 @@ export async function openInstance(
 
         webContents.setWindowOpenHandler(({ url }) => {
             if (isDiscordPopoutUrl(url)) {
-                return { action: isDiscordUrl(url) ? "allow" : "deny" };
+                return { action: "deny" };
             }
 
             if (isDiscordAttachmentUrl(url)) {

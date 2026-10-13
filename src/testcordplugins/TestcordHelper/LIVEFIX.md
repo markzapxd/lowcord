@@ -14,6 +14,18 @@ The server stays running until the toggle is turned off or Discord is closed.
 
 Send HTTP POST requests with a JSON body. Each request must have an `id` (any string for correlating responses) and an `action`. The response is JSON with the same `id`.
 
+### Authentication
+
+Every request must carry the per-session auth token, either in an `Authorization: Bearer <token>` header or as a `"token"` field in the JSON body. The token is regenerated each time the server starts and is written to `/tmp/opencode/livefix/token` (on Windows: `<drive>:\tmp\opencode\livefix\token`, e.g. `C:\tmp\...`):
+
+```bash
+TOKEN=$(cat /tmp/opencode/livefix/token)
+```
+
+Requests without it get `401`; requests carrying an `Origin`/`Referer` header or a `Host` other than `127.0.0.1:18963` get `403` (this blocks browsers and DNS rebinding, so only local token-holding processes can talk to the server).
+
+The token requirement can be turned off with the TestcordHelper setting **LiveFix Require Token** (on by default — leave it on unless your tooling cannot send headers). The `Origin`/`Referer`/`Host` checks always stay on.
+
 ### Actions
 
 #### `search` — Search webpack module factories for a string
@@ -111,12 +123,39 @@ Returns all plugins with patch failures and runtime errors:
 {"id": "6", "health": [{"plugin": "Questify", "patchFailures": [...], "runtimeErrors": [...]}]}
 ```
 
+#### `loaf` — Long frame attribution (Long Animation Frames API)
+
+Always-on recorder while LiveFix is enabled. Captures the last 40 main-thread frames longer than 50ms with the top scripts that blocked each one, then aggregates script time per invoker.
+
+```json
+{"id": "7", "action": "loaf"}
+```
+
+```json
+{"id": "7", "frameCount": 12, "totalMs": 8420, "topInvokers": [{"invoker": "event-listener:DIV#app-mount.onmouseout", "ms": 2450}], "frames": [...]}
+```
+
+Use this when the client feels laggy: `topInvokers` names exactly which handler or timer ate the time. Frames whose `blocking` is high but have no scripts point at style/layout cost instead of JavaScript.
+
+#### `hoverProbe` — Quantify hover lag
+
+Dispatches synthetic mouseover/mouseout pairs over 14 sidebar buttons and returns the median main-thread cost. Healthy clients measure below ~20ms; hundreds of milliseconds indicate the style recalc or handler pathology.
+
+```json
+{"id": "8", "action": "hoverProbe"}
+```
+
+```json
+{"id": "8", "medianMs": 0.3, "runs": [0.3, 0.3, 0.4], "healthyBelowMs": 20}
+```
+
 ## Usage Examples
 
 ### Find the new module ID for a feature
 
 ```bash
 curl -s -X POST http://127.0.0.1:18963 \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"id":"1","action":"search","query":"openPrivateChannel=()=>{let{user:e}=this.props"}'
 ```
@@ -125,6 +164,7 @@ curl -s -X POST http://127.0.0.1:18963 \
 
 ```bash
 curl -s -X POST http://127.0.0.1:18963 \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"id":"2","action":"eval","code":"Vencord.Webpack.wreq.m[\"688376\"].toString().slice(0,500)"}'
 ```
@@ -133,6 +173,7 @@ curl -s -X POST http://127.0.0.1:18963 \
 
 ```bash
 curl -s -X POST http://127.0.0.1:18963 \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"id":"3","action":"eval","code":"const w=Vencord.Webpack.wreq; const r=[]; for(const id in w.m){const s=w.m[id].toString(); if(s.includes(\"originLabel\")) r.push(id)} r"}'
 ```
@@ -141,6 +182,7 @@ curl -s -X POST http://127.0.0.1:18963 \
 
 ```bash
 curl -s -X POST http://127.0.0.1:18963 \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"id":"4","action":"testPattern","pattern":"popAnimation=\\(\\)=>\\{let\\{opacity","code":"popAnimation=()=>{let{opacity:e,scale:t}=this.state","flags":""}'
 ```
@@ -149,6 +191,7 @@ curl -s -X POST http://127.0.0.1:18963 \
 
 ```bash
 curl -s -X POST http://127.0.0.1:18963 \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"id":"5","action":"eval","code":"const s=Vencord.Webpack.wreq.m[\"994064\"].toString(); const i=s.indexOf(\"popAnimation\"); s.slice(Math.max(0,i-100),i+200)"}'
 ```

@@ -327,7 +327,7 @@ const log = {
     }
 };
 
-function showPluginToast(message: string, type = Toasts.Type.MESSAGE) {
+function showPluginToast(message: string, type: Parameters<typeof showToast>[1] = Toasts.Type.MESSAGE) {
     if (settings.store.showNotifications) {
         showToast(`[CustomDNS] ${message}`, type);
     }
@@ -638,6 +638,7 @@ export default definePlugin({
                 }
 
                 isActive = true;
+                try { void VencordNative?.privacy?.setDnsEnabled?.(true)?.catch?.(() => { }); } catch { }
                 showPluginToast(`${PLUGIN_NAME} activated with ${getProviderName()}.`, Toasts.Type.SUCCESS);
             },
 

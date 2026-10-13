@@ -13,11 +13,45 @@ import { Link } from "@components/Link";
 import { Paragraph } from "@components/Paragraph";
 import { Devs, EquicordDevs } from "@utils/constants";
 import { Margins } from "@utils/margins";
-import { useForceUpdater } from "@utils/react";
 import definePlugin, { OptionType } from "@utils/types";
-import { moment, TextInput, useEffect, useState } from "@webpack/common";
+import { moment, TextInput, useEffect, useReducer, useState } from "@webpack/common";
 
 import { DemoMessageContainer, timeFormats } from "./utils";
+
+// ── Global 1s ticker: 1 interval for all timestamps instead of N per-message intervals ──
+const tickListeners = new Set<() => void>();
+let tickInterval: ReturnType<typeof setInterval> | null = null;
+function ensureTicker() {
+    if (tickInterval !== null) return;
+    tickInterval = setInterval(() => {
+        formatCache.clear();
+        for (const cb of tickListeners) try { cb(); } catch { }
+    }, 1000);
+}
+function subscribeTick(cb: () => void) {
+    tickListeners.add(cb);
+    ensureTicker();
+    return () => {
+        tickListeners.delete(cb);
+        if (tickListeners.size === 0 && tickInterval !== null) {
+            clearInterval(tickInterval);
+            tickInterval = null;
+        }
+    };
+}
+function useGlobalTick(enabled: boolean) {
+    const [, forceUpdate] = useReducer(x => x + 1, 0);
+    useEffect(() => {
+        if (!enabled) return;
+        return subscribeTick(forceUpdate);
+    }, [enabled]);
+}
+
+// Output is identical for every timestamp in the same second with the same
+// template, so cache by second + template. Cleared each tick. Bounded so a
+// scrollback of distinct timestamps can't grow it without limit.
+const formatCache = new Map<string, string>();
+const FORMAT_CACHE_MAX = 512;
 
 type TimeFormat = {
     name: string;
@@ -32,26 +66,58 @@ type TimeRowProps = {
     pluginSettings: any;
 };
 
-const format = (date: Date, formatTemplate: string): string => {
-    const mmt = moment(date);
+// Timestamp's `timestamp` prop is `Date | Moment`. A Moment has toDate() but no
+// getTime(), so normalise before anything calls getTime() on it.
+function toDate(input: unknown): Date | null {
+    if (input instanceof Date) return Number.isNaN(input.getTime()) ? null : input;
+    const date = (input as { toDate?: () => unknown } | null)?.toDate?.();
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null;
+}
 
+// Discord's own `<t:...>` formatter saves and restores these thresholds, and moment
+// forces `ss = s - 1` on every `s` write, so that restore wipes the `ss: -1` and
+// `[relative]` degrades to "a few seconds ago". Re-apply before every format.
+function applyRelativeTimeThresholds() {
     moment.relativeTimeThreshold("s", 60);
     moment.relativeTimeThreshold("ss", -1);
     moment.relativeTimeThreshold("m", 60);
+}
 
-    const sameDayFormat = settings.store?.formats?.sameDayFormat || timeFormats.sameDayFormat.default;
-    const lastDayFormat = settings.store?.formats?.lastDayFormat || timeFormats.lastDayFormat.default;
-    const lastWeekFormat = settings.store?.formats?.lastWeekFormat || timeFormats.lastWeekFormat.default;
-    const sameElseFormat = settings.store?.formats?.sameElseFormat || timeFormats.sameElseFormat.default;
+const format = (date: Date, formatTemplate: string): string => {
+    applyRelativeTimeThresholds();
 
-    return mmt.format(formatTemplate)
-        .replace("calendar", () => mmt.calendar(null, {
+    const second = Math.floor(date.getTime() / 1000);
+    const key = `${second}|${formatTemplate}`;
+    const cached = formatCache.get(key);
+    if (cached !== undefined) return cached;
+
+    const mmt = moment(date);
+
+    // One settings read per call. These used to be four separate `settings.store.formats.X`
+    // chains, and every `formats.*` key the user never customised is absent from the stored
+    // object, so each of those reads went through SettingsStore.getDefaultValue.
+    const { formats } = settings.store;
+
+    const sameDayFormat = formats?.sameDayFormat || timeFormats.sameDayFormat.default;
+    const lastDayFormat = formats?.lastDayFormat || timeFormats.lastDayFormat.default;
+    const lastWeekFormat = formats?.lastWeekFormat || timeFormats.lastWeekFormat.default;
+    const sameElseFormat = formats?.sameElseFormat || timeFormats.sameElseFormat.default;
+
+    const out = mmt.format(formatTemplate)
+        .replace("calendar", () => mmt.calendar(moment(), {
             sameDay: sameDayFormat,
             lastDay: lastDayFormat,
             lastWeek: lastWeekFormat,
             sameElse: sameElseFormat
         }))
         .replace("relative", () => mmt.fromNow());
+
+    if (formatCache.size >= FORMAT_CACHE_MAX) {
+        const oldest = formatCache.keys().next().value;
+        if (oldest !== undefined) formatCache.delete(oldest);
+    }
+    formatCache.set(key, out);
+    return out;
 };
 
 const TimeRow = (props: TimeRowProps) => {
@@ -164,7 +230,7 @@ export default definePlugin({
             ]
         },
         {
-            find: /\.full,.{0,15}children:/,
+            find: ".MINUTE],[45*",
             replacement: {
                 // Tooltips for timestamp markdown (e.g. <t:1234567890>)
                 match: /(__unsupportedReactNodeAsText:)\i.full/,
@@ -173,8 +239,20 @@ export default definePlugin({
         }
     ],
 
-    renderTimestamp: (date: Date, type: "cozy" | "compact" | "tooltip" | "ariaLabel") => {
-        const forceUpdater = useForceUpdater();
+    start() {
+        applyRelativeTimeThresholds();
+    },
+
+    stop() {
+        if (tickInterval !== null) {
+            clearInterval(tickInterval);
+            tickInterval = null;
+        }
+        tickListeners.clear();
+        formatCache.clear();
+    },
+
+    renderTimestamp: (input: unknown, type: "cozy" | "compact" | "tooltip" | "ariaLabel") => {
         let formatTemplate: string;
 
         switch (type) {
@@ -191,13 +269,10 @@ export default definePlugin({
                 formatTemplate = settings.store.formats?.ariaLabelFormat || timeFormats.ariaLabelFormat.default;
         }
 
-        useEffect(() => {
-            if (formatTemplate.includes("calendar") || formatTemplate.includes("relative")) {
-                const interval = setInterval(forceUpdater, 1000);
-                return () => clearInterval(interval);
-            }
-        }, []);
+        const needsTick = formatTemplate.includes("calendar") || formatTemplate.includes("relative");
+        useGlobalTick(needsTick);
 
-        return format(date, formatTemplate);
+        const date = toDate(input);
+        return date ? format(date, formatTemplate) : "";
     }
 });

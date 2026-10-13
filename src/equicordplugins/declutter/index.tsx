@@ -12,10 +12,9 @@ import { Divider } from "@components/Divider";
 import { HeadingSecondary } from "@components/Heading";
 import { Notice } from "@components/Notice";
 import decor from "@plugins/decor";
+import { Devs, EquicordDevs } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
-import { Devs, EquicordDevs } from "@utils/index";
 import definePlugin, { OptionType } from "@utils/types";
-import { Alerts } from "@webpack/common";
 
 migratePluginSetting("Declutter", "removeShopAboveDms", "removeShopAboveDM");
 migratePluginSetting(
@@ -33,7 +32,8 @@ export const settings = definePluginSettings({
     },
     removeAvatarDecoration: {
         type: OptionType.BOOLEAN,
-        description: "Remove avatar decorations.",
+        description:
+            "Remove avatar decorations. This is/will be disabled if Decor is enabled.",
         default: false,
         disabled: () => isPluginEnabled("Decor"),
         restartNeeded: true,
@@ -59,6 +59,12 @@ export const settings = definePluginSettings({
     removeClanTag: {
         type: OptionType.BOOLEAN,
         description: "Remove clan tags.",
+        default: true,
+        restartNeeded: true,
+    },
+    removeDisplayNameStyles: {
+        type: OptionType.BOOLEAN,
+        description: "Remove animated/styled display names in the member list.",
         default: true,
         restartNeeded: true,
     },
@@ -165,15 +171,8 @@ export default definePlugin({
     tags: ["Appearance", "Customisation"],
     authors: [EquicordDevs.Leon135, Devs.prism, Devs.Kyuuhachi, Devs.SomeAspy],
     start() {
-        if (isPluginEnabled("Decor") && settings.store.removeAvatarDecoration) {
+        if (isPluginEnabled("Decor") && settings.store.removeAvatarDecoration)
             settings.store.removeAvatarDecoration = false;
-            Alerts.show({
-                title: "Declutter",
-                body: "Avatar decoration removal has been disabled to prevent conflicts with Decor plugin.",
-                confirmText: "OK",
-                confirmVariant: "critical-primary",
-            });
-        }
     },
     settings,
     patches: [
@@ -184,6 +183,7 @@ export default definePlugin({
                 match: /(?=0!==\i.length&&\i\?\(0,)/,
                 replace: "null&&",
             },
+            predicate: () => settings.store.removeProfileFrame,
         },
         {
             // Avatar decoration
@@ -234,7 +234,7 @@ export default definePlugin({
             // Nameplate
             find: ".MINI_PREVIEW,[",
             replacement: {
-                match: /function \i\((\i)\)\{(?=let.{1,5}\{nameplate:\i,)/,
+                match: /function \i\((\i)\)\{(?=let.{0,5}\{nameplate:\i,)/,
                 replace:
                     '$&if($1.placement!=="preview"&&$1.placement!=="mini_preview")return null;',
             },
@@ -257,6 +257,25 @@ export default definePlugin({
                 replace: "return false;",
             },
             predicate: () => settings.store.removeClanTag,
+        },
+        {
+            // Display name styles in member list
+            find: "#{intl::GUILD_OWNER}),children:",
+            replacement: [
+                {
+                    match: /(\i)=\(0,\i\.\i\)\(\{userId:\i\?\.id,guildId:\i\}\)/,
+                    replace: "$1=null",
+                },
+                {
+                    match: /animateRoleGradient:\i/,
+                    replace: "animateRoleGradient:false",
+                },
+                {
+                    match: /colorStrings:\i,/,
+                    replace: "",
+                },
+            ],
+            predicate: () => settings.store.removeDisplayNameStyles,
         },
         {
             // Always show username
@@ -339,12 +358,12 @@ export default definePlugin({
                     predicate: () => settings.store.removeShopAboveDms,
                 },
                 {
-                    match: /\.QUEST_HOME\},"quests"\)/,
+                    match: /\.QUEST_HOME\)\},"quests"\)/,
                     replace: "$&&&undefined",
                     predicate: () => settings.store.removeQuestsAboveDms,
                 },
                 {
-                    match: /\.APPLICATION_LIBRARY\},"library"\)/,
+                    match: /\.APPLICATION_LIBRARY\)\},"library"\)/,
                     replace: "$&&&undefined",
                     predicate: () => settings.store.removeLibraryAboveDms,
                 },

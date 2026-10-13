@@ -23,22 +23,7 @@ import { getUserSettingLazy } from "@api/UserSettings";
 import testcordToolbox from "@testcordplugins/testcordToolbox";
 import { Devs, TestcordDevs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
-import { FluxStore } from "@vencord/discord-types";
-import { findByPropsLazy, findStoreLazy } from "@webpack";
-import { Menu, Popout, useRef, useState, useStateFromStores } from "@webpack/common";
-interface ConnectedAccount {
-    id: string;
-    type: string;
-    revoked: boolean;
-    showActivity: boolean;
-}
-
-interface ConnectedAccountsStore extends FluxStore {
-    getAccounts(): ConnectedAccount[];
-}
-
-const ConnectedAccountsStore = findStoreLazy("ConnectedAccountsStore") as ConnectedAccountsStore;
-const ConnectedAccountActions = findByPropsLazy("setShowActivity");
+import { Menu, useMemo } from "@webpack/common";
 
 const ShowCurrentGame = getUserSettingLazy<boolean>("status", "showCurrentGame")!;
 
@@ -48,14 +33,9 @@ const settings = definePluginSettings({
         description: "Use the old icon style before Discord icon redesign",
         default: false
     },
-    sameColorAsOtherButtons: {
+    oldLogic: {
         type: OptionType.BOOLEAN,
-        description: "Match the color of other panel buttons in active state",
-        default: true
-    },
-    forcedColor: {
-        type: OptionType.BOOLEAN,
-        description: "Force theme-adaptive color for the button icon",
+        description: "Use the old state styling (red glow and red icon when game activity is off)",
         default: false
     },
     location: {
@@ -63,7 +43,7 @@ const settings = definePluginSettings({
         description: "Where to show the game activity toggle button",
         options: [
             { label: "Next to Mute/Deafen", value: "PANEL", default: true },
-            { label: "Equicord Toolbox", value: "TOOLBOX" }
+            { label: "Testcord Toolbox", value: "TOOLBOX" }
         ],
         get hidden() {
             return !isPluginEnabled(testcordToolbox.name);
@@ -71,109 +51,85 @@ const settings = definePluginSettings({
     }
 });
 
-function Icon({ className }: { className?: string; }) {
-    const { oldIcon, forcedColor, sameColorAsOtherButtons } = settings.use(["oldIcon", "forcedColor", "sameColorAsOtherButtons"]);
-    const showCurrentGame = ShowCurrentGame.useSetting();
-
-    const redLinePath = !oldIcon
-        ? "M22.7 2.7a1 1 0 0 0-1.4-1.4l-20 20a1 1 0 1 0 1.4 1.4Z"
-        : "M23 2.27 21.73 1 1 21.73 2.27 23 23 2.27Z";
-
-    const maskBlackPath = !oldIcon
-        ? "M23.27 4.73 19.27 .73 -.27 20.27 3.73 24.27Z"
-        : "M23.27 4.54 19.46.73 .73 19.46 4.54 23.27 23.27 4.54Z";
-
-    const mainFill = sameColorAsOtherButtons
-        ? "currentColor"
-        : (forcedColor
-            ? (showCurrentGame ? "var(--interactive-normal, currentColor)" : "var(--status-danger, #da373c)")
-            : (!showCurrentGame && !oldIcon ? "var(--status-danger, #da373c)" : "currentColor"));
-
-    const lineFill = sameColorAsOtherButtons
-        ? "currentColor"
-        : "var(--status-danger, #da373c)";
+function IconSvg({ className, showCurrentGame, oldIcon }: { className?: string; showCurrentGame: boolean; oldIcon: boolean; }) {
+    const lineLength = 30;
+    // Stable identity across renders: a fresh object every render forces
+    // React to diff (and the browser to recalc) the SVG style on each
+    // user-area render, even when nothing changed.
+    const lineStyle = useMemo<React.CSSProperties>(() => ({
+        strokeDasharray: lineLength,
+        strokeDashoffset: showCurrentGame ? lineLength : 0,
+        transition: "stroke-dashoffset 0.1s ease-in-out",
+    }), [showCurrentGame]);
 
     return (
-        <svg className={className} width="20" height="20" viewBox="0 0 24 24" style={{ color: mainFill }}>
+        <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <mask id="gameActivityLine">
+                <rect width="100%" height="100%" fill="#ffffff" />
+                <line
+                    className="blackLine"
+                    x1="22"
+                    y1="2"
+                    x2="2"
+                    y2="22"
+                    stroke="#000000"
+                    strokeWidth="6"
+                    strokeLinecap="round"
+                    style={lineStyle}
+                />
+            </mask>
+
             <path
-                fill={mainFill}
-                mask={!showCurrentGame ? "url(#gameActivityMask)" : void 0}
+                fill={!showCurrentGame && !oldIcon ? "var(--status-danger)" : "currentColor"}
+                mask="url(#gameActivityLine)"
                 d="M3.06 20.4q-1.53 0-2.37-1.065T.06 16.74l1.26-9q.27-1.8 1.605-2.97T6.06 3.6h11.88q1.8 0 3.135 1.17t1.605 2.97l1.26 9q.21 1.53-.63 2.595T20.94 20.4q-.63 0-1.17-.225T18.78 19.5l-2.7-2.7H7.92l-2.7 2.7q-.45.45-.99.675t-1.17.225Zm14.94-7.2q.51 0 .855-.345T19.2 12q0-.51-.345-.855T18 10.8q-.51 0-.855.345T16.8 12q0 .51.345 .855T18 13.2Zm-2.4-3.6q.51 0 .855-.345T16.8 8.4q0-.51-.345-.855T15.6 7.2q-.51 0-.855.345T14.4 8.4q0 .51.345 .855T15.6 9.6ZM6.9 13.2h1.8v-2.1h2.1v-1.8h-2.1v-2.1h-1.8v2.1h-2.1v1.8h2.1v2.1Z"
             />
-            {!showCurrentGame && <>
-                <path fill={lineFill} d={redLinePath} />
-                <mask id="gameActivityMask">
-                    <rect fill="white" x="0" y="0" width="24" height="24" />
-                    <path fill="black" d={maskBlackPath} />
-                </mask>
-            </>}
+
+            <line
+                x1="22"
+                y1="2"
+                x2="2"
+                y2="22"
+                stroke="var(--status-danger, currentColor)"
+                strokeWidth="2"
+                strokeLinecap="round"
+                style={lineStyle}
+            />
         </svg>
     );
 }
 
-function GameActivityToggleButton({ iconForeground, hideTooltips, nameplate }: UserAreaRenderProps) {
-    const { location, sameColorAsOtherButtons } = settings.use(["location", "sameColorAsOtherButtons"]);
+function Icon({ className }: { className?: string; }) {
+    const { oldIcon } = settings.use(["oldIcon"]);
     const showCurrentGame = ShowCurrentGame.useSetting();
+    return <IconSvg className={className} showCurrentGame={showCurrentGame} oldIcon={oldIcon} />;
+}
 
-    const connectedAccounts = useStateFromStores([ConnectedAccountsStore], () => ConnectedAccountsStore.getAccounts());
-    const spotifyAccounts = connectedAccounts.filter(account => account.type === "spotify" && !account.revoked);
-    // The update is an API request which takes a bit to update the store, so we have to use our own state to reflect the change immediately
-    const [shareSpotifyActivity, setShareSpotifyActivity] = useState(spotifyAccounts[0]?.showActivity ?? false);
-
-    const buttonRef = useRef<HTMLButtonElement | null>(null);
+function GameActivityToggleButton({ iconForeground, hideTooltips, nameplate }: UserAreaRenderProps) {
+    const { location, oldIcon } = settings.use(["location", "oldIcon"]);
+    const showCurrentGame = ShowCurrentGame.useSetting();
 
     if (location !== "PANEL" && isPluginEnabled(testcordToolbox.name)) return null;
 
-    const buttonProps = {
-        tooltipText: hideTooltips ? void 0 : (showCurrentGame ? "Disable Game Activity" : "Enable Game Activity"),
-        icon: <Icon className={iconForeground} />,
-        role: "switch",
-        "aria-checked": showCurrentGame,
-        redGlow: sameColorAsOtherButtons ? false : !showCurrentGame,
-        plated: nameplate != null,
-        onClick: () => ShowCurrentGame.updateSetting(old => !old)
-    };
-
-    // Only show switch if there's exactly one Spotify account connected. Otherwise it may lead to confusion
-    if (spotifyAccounts.length !== 1)
-        return <UserAreaButton {...buttonProps} />;
-
-    const spotifyAccount = spotifyAccounts[0];
-
     return (
-        <Popout
-            position="top"
-            align="left"
-            targetElementRef={buttonRef}
-            renderPopout={({ closePopout }) => (
-                <Menu.Menu navId="vc-gameActivityToggle-menu" onClose={closePopout}>
-                    <Menu.MenuCheckboxItem
-                        id="vc-toggle-spotify"
-                        label="Share Spotify Activity"
-                        checked={shareSpotifyActivity}
-                        action={async () => {
-                            ConnectedAccountActions.setShowActivity(spotifyAccount.type, spotifyAccount.id, !shareSpotifyActivity);
-                            setShareSpotifyActivity(!shareSpotifyActivity);
-                        }}
-                    />
-                </Menu.Menu>
-            )}
-        >
-            {popoutProps => (
-                <UserAreaButton
-                    ref={buttonRef}
-                    onContextMenu={popoutProps.onClick}
-                    {...buttonProps}
-                />
-            )}
-        </Popout>
+        <UserAreaButton
+            className="button__201d5 wrapper__201d5"
+            tooltipText={hideTooltips ? void 0 : showCurrentGame ? "Disable Game Activity" : "Enable Game Activity"}
+            role="switch"
+            aria-checked={showCurrentGame}
+            redGlow={!showCurrentGame}
+            plated={nameplate != null}
+            onClick={() => ShowCurrentGame.updateSetting(old => !old)}
+            icon={<IconSvg className={iconForeground} showCurrentGame={showCurrentGame} oldIcon={oldIcon} />}
+        />
     );
 }
 
 export default definePlugin({
     name: "GameActivityToggle",
-    description: "Adds a button next to the mic and deafen button to toggle game activity. Right click it to toggle Spotify activity.",
-    tags: ["Activity", "Shortcuts"],
+    description: "Adds a button next to the mic and deafen button to toggle game activity.",
+    tags: ["Activity", "Shortcuts", "Testcord Modified"],
+    testcordModified: true,
     authors: [Devs.Nuckyz, Devs.RuukuLada, TestcordDevs.sirphantom89],
     dependencies: ["UserSettingsAPI", "UserAreaAPI"],
     settings,
@@ -183,9 +139,20 @@ export default definePlugin({
         render: GameActivityToggleButton
     },
 
+    start() {
+        const ric = (window as any).requestIdleCallback as ((cb: () => void, opts?: { timeout: number; }) => void) | undefined;
+        const warm = () => {
+            try {
+                ShowCurrentGame.getSetting();
+            } catch { }
+        };
+        if (typeof ric === "function") ric(warm, { timeout: 2000 });
+        else setTimeout(warm, 500);
+    },
+
     toolboxActions() {
-        const { location } = settings.use(["location"]);
-        const showCurrentGame = ShowCurrentGame.useSetting();
+        const { location } = settings.store;
+        const showCurrentGame = ShowCurrentGame.getSetting();
 
         if (location !== "TOOLBOX") return null;
 

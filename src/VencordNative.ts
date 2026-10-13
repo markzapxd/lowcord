@@ -8,6 +8,7 @@ import type { Settings } from "@api/Settings";
 import type { CspRequestResult } from "@main/csp/manager";
 import type { PluginIpcMappings } from "@main/ipcPlugins";
 import { UserThemeHeader } from "@main/themes";
+import type { UpdateCheckResult, UpdateOutcome } from "@main/updater/common";
 import { IpcEvents } from "@shared/IpcEvents";
 import type { IpcRes } from "@utils/types";
 import { ipcRenderer } from "electron/renderer";
@@ -42,9 +43,9 @@ export default {
     },
 
     updater: {
-        getUpdates: () => invoke<IpcRes<Record<"hash" | "author" | "message", string>[]>>(IpcEvents.GET_UPDATES),
-        update: () => invoke<IpcRes<boolean>>(IpcEvents.UPDATE),
-        forceUpdate: () => invoke<IpcRes<boolean>>(IpcEvents.FORCE_UPDATE),
+        getUpdates: (branch?: string) => invoke<IpcRes<UpdateCheckResult>>(IpcEvents.GET_UPDATES, branch),
+        update: (branch?: string) => invoke<IpcRes<UpdateOutcome>>(IpcEvents.UPDATE, branch),
+        forceUpdate: (branch?: string) => invoke<IpcRes<UpdateOutcome>>(IpcEvents.FORCE_UPDATE, branch),
         rebuild: () => invoke<IpcRes<boolean>>(IpcEvents.BUILD),
         getRepo: () => invoke<IpcRes<string>>(IpcEvents.GET_REPO),
     },
@@ -107,6 +108,37 @@ export default {
         setUpdateState: (available: boolean) => ipcRenderer.send(IpcEvents.SET_TRAY_UPDATE_STATE, available),
         onCheckUpdates: (cb: () => void) => { ipcRenderer.on(IpcEvents.TRAY_CHECK_UPDATES, cb); },
         onRepair: (cb: () => void) => { ipcRenderer.on(IpcEvents.TRAY_REPAIR, cb); },
+    },
+
+    privacy: {
+        getData: () => invoke<any>(IpcEvents.PRIVACY_GET_DATA),
+        toggleShield: (key: string, value: boolean) => invoke<any>(IpcEvents.PRIVACY_TOGGLE_SHIELD, key, value),
+        setDnsProvider: (name: string) => invoke<boolean>(IpcEvents.PRIVACY_SET_DNS_PROVIDER, name),
+        setDnsEnabled: (enabled: boolean) => invoke<boolean>(IpcEvents.PRIVACY_SET_DNS_ENABLED, enabled),
+        addCustomDns: (name: string, doh: string, fallback: string) => invoke<boolean>(IpcEvents.PRIVACY_ADD_CUSTOM_DNS, name, doh, fallback),
+        pingLatencies: () => invoke<Record<string, number>>(IpcEvents.PRIVACY_PING_LATENCIES),
+        runDiagnostic: (mode: "doh" | "dot" | "auto") => invoke<any[]>(IpcEvents.PRIVACY_RUN_DIAGNOSTIC, mode),
+        stopDiagnostic: () => invoke<any[]>(IpcEvents.PRIVACY_STOP_DIAGNOSTIC),
+        clearDnsCache: () => invoke<any>(IpcEvents.PRIVACY_CLEAR_DNS_CACHE),
+        clearLogs: () => invoke<any[]>(IpcEvents.PRIVACY_CLEAR_LOGS),
+        clearAllowedLogs: () => invoke<any[]>(IpcEvents.PRIVACY_CLEAR_ALLOWED_LOGS),
+        setMaxLogs: (limit: number) => invoke<number>(IpcEvents.PRIVACY_SET_MAX_LOGS, limit),
+        incrementCounter: (key: string, amount?: number) => invoke<any>(IpcEvents.PRIVACY_INCREMENT_COUNTER, key, amount),
+        getHostRules: () => invoke<Record<string, "allow" | "block">>(IpcEvents.PRIVACY_GET_HOST_RULES),
+        setHostRule: (host: string, rule: "allow" | "block") => invoke<Record<string, "allow" | "block">>(IpcEvents.PRIVACY_SET_HOST_RULE, host, rule),
+        clearHostRule: (host: string) => invoke<Record<string, "allow" | "block">>(IpcEvents.PRIVACY_CLEAR_HOST_RULE, host),
+        acknowledgeAlerts: () => invoke<any[]>(IpcEvents.PRIVACY_ACK_ALERTS),
+        postScienceEvents: (payload: any, token?: string, cookie?: string, superProps?: string) =>
+            invoke<{ status: number; body?: any; error?: string; }>(IpcEvents.PRIVACY_POST_SCIENCE_EVENTS, payload, token, cookie, superProps),
+        onSecurityAlert: (cb: (alert: any) => void) => {
+            const listener = (_: unknown, alert: any) => cb(alert);
+            ipcRenderer.on(IpcEvents.PRIVACY_SECURITY_ALERT, listener);
+            // Returning the unsubscribe lets callers clean up on unmount
+            // instead of leaking a listener per panel open.
+            return () => {
+                ipcRenderer.removeListener(IpcEvents.PRIVACY_SECURITY_ALERT, listener);
+            };
+        }
     },
 
     pluginHelpers: PluginHelpers

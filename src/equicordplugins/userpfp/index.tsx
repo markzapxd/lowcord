@@ -97,13 +97,15 @@ export default definePlugin({
             find: "getUserAvatarURL:",
             replacement: [
                 {
-                    match: /(getUserAvatarURL:)(\i),/,
-                    replace: "$1$self.getAvatarHook($2),"
+                    match: /(getUserAvatarURL:)([^,]+),/,
+                    replace: "$1$self.getAvatarHook($2),",
+                    noWarn: true
                 },
                 {
-                    match: /(getGuildMemberAvatarURLSimple:)(\i),/,
+                    match: /(getGuildMemberAvatarURLSimple:)([^,]+),/,
                     replace: "$1$self.getAvatarServerHook($2),",
-                    predicate: () => settings.store.overrideServerAvatars
+                    predicate: () => settings.store.overrideServerAvatars,
+                    noWarn: true
                 }
             ]
         }
@@ -118,6 +120,7 @@ export default definePlugin({
                     label="Set Avatar"
                     id="set-avatar"
                     icon={PencilIcon}
+                    leadingAccessory={{ type: "icon", icon: PencilIcon }}
                     action={async () => {
                         await requireSettingsModal();
                         openModal(modalProps => <SetAvatarModal userId={user.id} modalProps={modalProps} />);
@@ -153,6 +156,8 @@ export default definePlugin({
 
         if (avatars[userId]) {
             const customUrl = avatars[userId];
+            if (customUrl.startsWith("data:")) return customUrl;
+
             try {
                 const res = new URL(customUrl);
                 if (size) res.searchParams.set("size", size.toString());

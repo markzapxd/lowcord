@@ -23,6 +23,7 @@ import { definePluginSettings } from "@api/Settings";
 import { getUserSettingLazy } from "@api/UserSettings";
 import { BaseText } from "@components/BaseText";
 import { Devs } from "@utils/constants.js";
+import { Logger } from "@utils/Logger";
 import { Queue } from "@utils/Queue";
 import definePlugin, { OptionType } from "@utils/types";
 import { Channel, Message } from "@vencord/discord-types";
@@ -43,7 +44,19 @@ import { ComponentType, JSX } from "react";
 const messageCache = new Map<string, {
     message?: Message;
     fetched: boolean;
+    /** Epoch ms before which no new fetch may be started for this key. */
+    retryAfter?: number;
 }>();
+
+/**
+ * Keys whose current cooldown has already been reported, so a failing link logs once per
+ * window rather than once per attempt. Cleared alongside `messageCache` so it cannot grow
+ * past the number of cached messages.
+ */
+const cooldownLogged = new Set<string>();
+
+const getCacheKey = (channelId: string, messageId: string) => `${channelId}:${messageId}`;
+const logger = new Logger("MessageLinkEmbeds");
 
 const Embed = findComponentLazy(m => m.prototype?.renderSuppressButton);
 const ChannelMessage = findComponentByCodeLazy("childrenExecutedCommand:", ".hideAccessories");
@@ -119,29 +132,71 @@ const settings = definePluginSettings({
     clearMessageCache: {
         type: OptionType.COMPONENT,
         component: () => (
-            <Button onClick={() => messageCache.clear()}>
+            <Button onClick={() => { messageCache.clear(); cooldownLogged.clear(); }}>
                 Clear the linked message cache
             </Button>
         )
     }
 });
 
-async function fetchMessage(channelID: string, messageID: string) {
-    const cached = messageCache.get(messageID);
-    if (cached) return cached.message;
+/**
+ * How long to wait before retrying a link whose fetch failed. Long enough that a passing
+ * outage does not turn into one request per render pass per link (the fetch queue is
+ * unbounded), short enough that a transient failure is not cached for the whole session.
+ */
+const FETCH_RETRY_DELAY_MS = 30_000;
 
-    messageCache.set(messageID, { fetched: false });
+async function fetchMessage(channelId: string, messageId: string) {
+    const cacheKey = getCacheKey(channelId, messageId);
 
-    const msg = await TestcordRequestCoordinator.fetchMessageAround(channelID, messageID).catch(() => null);
+    const cached = messageCache.get(cacheKey);
+    if (cached) {
+        // A resolved message is the final answer.
+        if (cached.message !== undefined) return cached.message;
+        // A retry cooldown is not an answer, but it does mean "do not re-request yet".
+        if (cached.retryAfter !== undefined && Date.now() < cached.retryAfter) return undefined;
+        // Expired cooldown: drop it so a dead link does not hold a slot for the session.
+        messageCache.delete(cacheKey);
+        cooldownLogged.delete(cacheKey);
+    }
+
+    // In-flight marker so concurrent renders of the same link do not stack requests.
+    messageCache.set(cacheKey, { fetched: false });
+
+    let msg: Awaited<ReturnType<typeof TestcordRequestCoordinator.fetchMessageAround>>;
+    try {
+        msg = await TestcordRequestCoordinator.fetchMessageAround(channelId, messageId);
+    } catch (e) {
+        // A transport failure is not an answer about the message. Back off instead of
+        // caching the blank forever (the old behaviour) or retrying on every render pass
+        // (a request storm, since the fetch queue is unbounded). A "message is gone"
+        // verdict is conclusive, so that one stays cached unconditionally.
+        messageCache.set(cacheKey, { fetched: false, retryAfter: Date.now() + FETCH_RETRY_DELAY_MS });
+        // Never log this per attempt. This runs as a message decoration, so every visible
+        // message with a link that cannot be fetched lands here, and an error-level log per
+        // failure means a console entry, a DevTools update and a renderer_js.log write for
+        // each one - measurably enough to make the whole client feel heavy when link
+        // previews are unreachable. Once per cooldown window per key is enough to notice;
+        // the failure is a transport outcome, not an actionable error.
+        if (!cooldownLogged.has(cacheKey)) {
+            cooldownLogged.add(cacheKey);
+            logger.debug(`Link preview unavailable for ${messageId}; backing off for ${FETCH_RETRY_DELAY_MS / 1000}s`);
+        }
+        return;
+    }
+
     if (!msg) return;
 
-    const message: Message = MessageStore.getMessages(msg.channel_id).receiveMessage(msg).get(msg.id);
+    if (msg.id !== messageId) return;
+
+    const message = MessageStore.getMessages(msg.channel_id).receiveMessage(msg).get(msg.id);
     if (!message) return;
 
-    messageCache.set(message.id, {
+    messageCache.set(cacheKey, {
         message,
         fetched: true
     });
+    cooldownLogged.delete(cacheKey);
 
     return message;
 }
@@ -217,31 +272,37 @@ function MessageEmbedAccessory({ message }: { message: Message; }) {
 
     const accessories = [] as (JSX.Element | null)[];
 
-    for (const [_, channelID, messageID] of message.content!.matchAll(messageLinkRegex)) {
-        if (embeddedBy.includes(messageID) || embeddedBy.length > 2) {
+    const seen = new Set<string>();
+    let count = 0;
+    for (const [_, channelId, messageId] of message.content!.matchAll(messageLinkRegex)) {
+        if (embeddedBy.includes(messageId) || embeddedBy.length > 2 || seen.has(messageId) || count >= 5) {
             continue;
         }
 
-        const linkedChannel = ChannelStore.getChannel(channelID);
+        seen.add(messageId);
+        count++;
+
+        const linkedChannel = ChannelStore.getChannel(channelId);
         if (!linkedChannel || (!linkedChannel.isPrivate() && !PermissionStore.can(PermissionsBits.VIEW_CHANNEL, linkedChannel))) {
             continue;
         }
 
         const { listMode, idList } = settings.store;
 
-        const isListed = [linkedChannel.guild_id, channelID, message.author.id].some(id => id && idList.includes(id));
+        const isListed = [linkedChannel.guild_id, channelId, message.author.id].some(id => id && idList.includes(id));
 
         if (listMode === "blacklist" && isListed) continue;
         if (listMode === "whitelist" && !isListed) continue;
 
-        let linkedMessage = messageCache.get(messageID)?.message;
+        const cacheKey = getCacheKey(channelId, messageId);
+        let linkedMessage = messageCache.get(cacheKey)?.message;
         if (!linkedMessage) {
-            linkedMessage ??= MessageStore.getMessage(channelID, messageID);
+            linkedMessage ??= MessageStore.getMessage(channelId, messageId);
             if (linkedMessage) {
-                messageCache.set(messageID, { message: linkedMessage, fetched: true });
+                messageCache.set(cacheKey, { message: linkedMessage, fetched: true });
             } else {
 
-                messageFetchQueue.unshift(() => fetchMessage(channelID, messageID)
+                messageFetchQueue.unshift(() => fetchMessage(channelId, messageId)
                     .then(m => m && updateMessage(message.channel_id, message.id))
                 );
                 continue;
@@ -343,7 +404,7 @@ function AutomodEmbedAccessory(props: MessageEmbedProps): JSX.Element | null {
                     const { width, height } = computeWidthAndHeight(a.width, a.height);
                     return (
                         <div key={idx}>
-                            <img src={a.url} width={width} height={height} />
+                            <img src={a.proxyURL ?? a.url} width={width} height={height} />
                         </div>
                     );
                 })}

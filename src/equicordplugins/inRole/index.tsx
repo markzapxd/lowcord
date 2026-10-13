@@ -39,7 +39,9 @@ export default definePlugin({
     dependencies: ["UserSettingsAPI", "CommandsAPI"],
     start() {
         // DeveloperMode needs to be enabled for the context menu to be shown
-        DeveloperMode.updateSetting(true);
+        const ric = (window as any).requestIdleCallback as ((cb: () => void, opts?: { timeout: number; }) => void) | undefined;
+        if (typeof ric === "function") ric(() => DeveloperMode.updateSetting(true), { timeout: 2000 });
+        else setTimeout(() => DeveloperMode.updateSetting(true), 500);
     },
     settingsAboutComponent: () => {
         return (
@@ -95,6 +97,7 @@ export default definePlugin({
                         showInRoleModal(getMembersInRole(role.id, guild.id), role.id, channel.id);
                     }}
                     icon={InfoIcon}
+                    leadingAccessory={{ type: "icon", icon: InfoIcon }}
                 />
             );
         },
@@ -121,6 +124,7 @@ export default definePlugin({
                         showInRoleModal(getMembersInRole(role.id, guild.id), role.id, channel.id);
                     }}
                     icon={InfoIcon}
+                    leadingAccessory={{ type: "icon", icon: InfoIcon }}
                 />
             );
         }

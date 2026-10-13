@@ -5,7 +5,7 @@
  */
 
 import { IpcEvents } from "@shared/IpcEvents";
-import { gitHashShort } from "@shared/vencordUserAgent";
+import { gitHash } from "@shared/vencordUserAgent";
 import { BrowserWindow, ipcMain, Menu, MenuItemConstructorOptions, shell } from "electron";
 import aboutHtml from "file://about.html?minify";
 
@@ -61,14 +61,11 @@ function openAboutWindow() {
         return;
     }
 
-    const height = 750;
-    const width = height * (4 / 3);
-
     aboutWindow = new BrowserWindow({
         center: true,
         autoHideMenuBar: true,
-        height,
-        width
+        height: 525,
+        width: 900
     });
 
     aboutWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -83,7 +80,7 @@ function openAboutWindow() {
 
     const aboutParams = aboutHtml
         .replaceAll("{{VERSION}}", VERSION)
-        .replaceAll("{{GIT_HASH}}", gitHashShort);
+        .replaceAll("{{GIT_HASH}}", gitHash); // change to gitHashShort if/when its added
     const base64Html = Buffer.from(aboutParams).toString("base64");
     aboutWindow.loadURL(`data:text/html;base64,${base64Html}`);
     aboutWindow.on("closed", () => {
@@ -91,7 +88,7 @@ function openAboutWindow() {
     });
 }
 
-function createEquicordMenuItems(): MenuItemConstructorOptions[] {
+function createVencordMenuItems(): MenuItemConstructorOptions[] {
     return [
         {
             label: "Testcord",
@@ -119,7 +116,6 @@ function createEquicordMenuItems(): MenuItemConstructorOptions[] {
                 }
             ]
         },
-        { type: "separator" }
     ];
 }
 
@@ -130,8 +126,8 @@ export function patchTrayMenu(): void {
         const alreadyPatched = template.some(item => item.label === "Testcord");
         if (isTrayMenu(template) && !alreadyPatched) {
             const insertIndex = findInsertIndex(template);
-            const equicordItems = createEquicordMenuItems();
-            template.splice(insertIndex, 0, ...equicordItems);
+            const vencordItems = createVencordMenuItems();
+            template.splice(insertIndex, 0, ...vencordItems);
         }
 
         return originalBuildFromTemplate.call(this, template);

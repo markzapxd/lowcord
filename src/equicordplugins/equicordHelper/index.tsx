@@ -5,6 +5,7 @@
  */
 
 import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
+import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { HeaderBarButton } from "@api/HeaderBar";
 import { addMessagePreSendListener, removeMessagePreSendListener } from "@api/MessageEvents";
 import { isPluginEnabled } from "@api/PluginManager";
@@ -15,8 +16,8 @@ import { Devs, EQUICORD_GUILD_ID, EQUICORD_SUPPORT_CHANNEL_ID, EquicordDevs, SUP
 import { isAnyPluginDev, isEquicordGuild } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import { StandingState } from "@vencord/discord-types/enums";
-import { findByCodeLazy, findStoreLazy } from "@webpack";
-import { Alerts, ApplicationCommandIndexStore, NavigationRouter, React, SettingsRouter, UserGuildSettingsStore, UserStore, useStateFromStores, VoiceStateStore } from "@webpack/common";
+import { filters,find } from "@webpack";
+import { Alerts, ApplicationCommandIndexStore, Menu, NavigationRouter, React, SafetyHubStore, SettingsRouter, UserGuildSettingsStore, UserStore, useStateFromStores, VoiceStateStore } from "@webpack/common";
 import { ComponentType } from "react";
 
 import { PluginButtons } from "./pluginButtons";
@@ -28,8 +29,42 @@ migratePluginToSettings(true, "EquicordHelper", "GuildTagSettings", "disableAdop
 
 let clicked = false;
 
-const SafetyHubStore = findStoreLazy("SafetyHubStore");
-const fetchSafetyHub: () => Promise<void> = findByCodeLazy("SAFETY_HUB_FETCH_START");
+let _fetchSafetyHub: (() => Promise<void>) | undefined;
+let _fetchSafetyHubTries = 0;
+function fetchSafetyHub(): Promise<void> {
+    if (_fetchSafetyHub) return _fetchSafetyHub();
+    if (_fetchSafetyHubTries >= 5) {
+        // Fallback: dispatch the flux action directly — works even when the helper module moved.
+        try {
+            const { FluxDispatcher } = require("@webpack/common") as typeof import("@webpack/common");
+            FluxDispatcher.dispatch({ type: "SAFETY_HUB_FETCH_START" } as any);
+        } catch { }
+        return Promise.resolve();
+    }
+    _fetchSafetyHubTries++;
+    try {
+        // Use isIndirect find so a miss doesn't log an error — Discord renames this module often.
+        const mod: any = find(filters.byCode("SAFETY_HUB_FETCH_START", "getSuspendedUserToken"), { isIndirect: true });
+        if (typeof mod === "function") {
+            _fetchSafetyHub = mod;
+            return mod();
+        }
+        if (mod && typeof mod === "object") {
+            const fn = Object.values(mod).find(v => typeof v === "function") as (() => Promise<void>) | undefined;
+            if (fn) {
+                _fetchSafetyHub = fn;
+                return fn();
+            }
+        }
+        // If module not found yet (chunk not loaded), try flux dispatch as fallback too
+        try {
+            const { FluxDispatcher } = require("@webpack/common") as typeof import("@webpack/common");
+            FluxDispatcher.dispatch({ type: "SAFETY_HUB_FETCH_START" } as any);
+            return Promise.resolve();
+        } catch { }
+    } catch { }
+    return Promise.resolve();
+}
 
 const StandingConfig: Record<number, { label: string; hoverColor: string; Icon: ComponentType<any>; }> = {
     [StandingState.ALL_GOOD]: { label: "All good!", hoverColor: "var(--status-positive)", Icon: ShieldIcon },
@@ -40,13 +75,35 @@ const StandingConfig: Record<number, { label: string; hoverColor: string; Icon: 
 };
 
 function StandingButton() {
-    const standing = useStateFromStores([SafetyHubStore], () => SafetyHubStore.getAccountStanding());
-    const isInitialized = useStateFromStores([SafetyHubStore], () => SafetyHubStore.isInitialized());
+    const deps = SafetyHubStore ? [SafetyHubStore] as const : [];
+    const standing = useStateFromStores(deps as any, () => SafetyHubStore?.getAccountStanding?.());
+    const isInitialized = useStateFromStores(deps as any, () => SafetyHubStore?.isInitialized?.() ?? false);
     const [hovered, setHovered] = React.useState(false);
 
     React.useEffect(() => {
-        if (!isInitialized) fetchSafetyHub().catch(() => { });
+        if (!SafetyHubStore) {
+            // Store not loaded yet — try anyway via flux dispatch; waitForStore will populate SafetyHubStore and trigger re-render
+            Promise.resolve(fetchSafetyHub()).catch(() => { });
+            return;
+        }
+        if (!isInitialized) {
+            try {
+                Promise.resolve(fetchSafetyHub()).catch(() => { });
+            } catch { }
+            const t = setTimeout(() => {
+                try {
+                    if (!SafetyHubStore?.isInitialized?.()) Promise.resolve(fetchSafetyHub()).catch(() => { });
+                } catch { }
+            }, 1500);
+            return () => clearTimeout(t);
+        }
     }, [isInitialized]);
+
+    React.useEffect(() => {
+        if (standing === undefined) {
+            Promise.resolve(fetchSafetyHub()).catch(() => { });
+        }
+    }, []);
 
     const config = StandingConfig[standing?.state] ?? StandingConfig[StandingState.ALL_GOOD];
 
@@ -61,6 +118,24 @@ function StandingButton() {
         </div>
     );
 }
+
+const addAutoCorrectMenuItem: NavContextMenuPatchCallback = children => {
+    const { enableAutoCorrect, autoCorrect } = settings.store;
+    if (!enableAutoCorrect) return;
+
+    const group = findGroupChildrenByChildId("spellcheck-enabled", children, true);
+    if (!group) return;
+
+    const idx = group.findIndex(c => c?.props?.id?.includes("spellcheck-enabled"));
+    group.splice(idx + 1, 0,
+        <Menu.MenuCheckboxItem
+            id="vc-enable-autocorrect"
+            label="Enable Autocorrect"
+            checked={autoCorrect}
+            action={() => settings.store.autoCorrect = !settings.store.autoCorrect}
+        />
+    );
+};
 
 const listener = async (channelId, msg) => {
     if (!settings.store.noBulletPoints) return;
@@ -138,6 +213,24 @@ const settings = definePluginSettings({
         description: "Hide voice indicator in server list when only active channels are muted",
         restartNeeded: true,
         default: false,
+    },
+    noOnboarding: {
+        type: OptionType.BOOLEAN,
+        description: "Skips the server onboarding by gaslighting it",
+        restartNeeded: true,
+        default: false,
+    },
+    enableAutoCorrect: {
+        type: OptionType.BOOLEAN,
+        description: "Adds a chat box context menu toggle for native autocorrection and text replacements",
+        restartNeeded: true,
+        default: false
+    },
+    autoCorrect: {
+        type: OptionType.BOOLEAN,
+        description: "Use native autocorrection and text replacements in message editors",
+        hidden: true,
+        default: false
     }
 });
 
@@ -156,13 +249,24 @@ export default definePlugin({
         EquicordDevs.omaw,
         Devs.Samwich,
         Devs.AutumnVN,
-        EquicordDevs.auggeeo
+        EquicordDevs.auggeeo,
+        EquicordDevs.secp192k1,
+        EquicordDevs.tie
     ],
     required: true,
     settings,
+    contextMenus: {
+        "textarea-context": addAutoCorrectMenuItem
+    },
     headerBarButton: {
         icon: ShieldIcon,
-        render: () => (settings.store.accountStandingButton ? <StandingButton /> : null),
+        render: () => {
+            try {
+                return settings.store.accountStandingButton ? <StandingButton /> : null;
+            } catch {
+                return null;
+            }
+        },
     },
     patches: [
         // Fixes Unknown Resolution/FPS Crashing
@@ -217,6 +321,7 @@ export default definePlugin({
         // Overriding css on Preview Camera/Change Video Background popup
         {
             find: ".PREVIEW_CAMERA_MODAL,",
+            noWarn: true,
             replacement: {
                 match: /className:\i.\i,(?=children:\()/,
                 replace: "$&style:{transform: \"scalex(1)\"},"
@@ -308,7 +413,7 @@ export default definePlugin({
                 match: /case \i\.\i\.WINDOWS:/,
                 replace: 'case "WEB":'
             },
-            predicate: () => Settings.winNativeTitleBar,
+            predicate: () => Settings.nativeTitleBar,
         },
         {
             find: '"refresh-title-bar-small"',
@@ -322,7 +427,7 @@ export default definePlugin({
                     replace: "true"
                 }
             ],
-            predicate: () => Settings.winNativeTitleBar,
+            predicate: () => Settings.nativeTitleBar,
         },
         {
             find: "DirectMessage: getSpringConfigs()",
@@ -336,7 +441,7 @@ export default definePlugin({
                     replace: "$&&&!$self.isChannelMuted($1?.guildId,$1?.id)"
                 },
                 {
-                    match: /\.afkChannelId\?\[\].{0,50}.filter\((\i)=>\i\.type===\i\.\i\.VOICE/,
+                    match: /\.afkChannelId\).{0,80}.filter\((\i)=>\i\.type===\i\.\i\.VOICE/,
                     replace: "$&&&!$self.isChannelMuted($1?.guildId,$1?.channelId)"
                 },
                 {
@@ -344,11 +449,19 @@ export default definePlugin({
                     replace: "$&&&!$self.isChannelMuted($1?.guildId,$1?.channelId)"
                 },
                 {
-                    match: /\.getEmbeddedActivitiesForGuild\((\i)\)(?=.flatMap\(\i=>)/,
+                    match: /\.getEmbeddedActivitiesForGuild\((\i)\)(?=.{0,100}\.flatMap\(\i=>)/,
                     replace: "$&.filter(e=>!$self.isChannelMuted($1?.guildId,e?.channelId))"
                 }
             ],
             predicate: () => settings.store.hideVoiceIndicatorForMutedChannels,
+        },
+        {
+            find: 'type:"GUILD_ONBOARDING_PROMPTS_FETCH_START"',
+            replacement: {
+                match: /(?<="GUILD_ONBOARDING_PROMPTS_FETCH_SUCCESS",guildId:\i,\.\.\.\i)(?=\})/,
+                replace: ",enabled:!1"
+            },
+            predicate: () => settings.store.noOnboarding
         },
         // Add opening profile functionality to some connections
         {
@@ -360,6 +473,30 @@ export default definePlugin({
                 }
             ]
         },
+        // gif-picker context menu doesnt get full context so give it
+        {
+            find: "renderEmptyFavorite",
+            replacement: {
+                match: /(?<=handleContextMenu.{0,150})(?=link:(\i)\.url)/,
+                replace: "...$1,"
+            }
+        },
+        {
+            find: "getSlateEditor:()=>",
+            replacement: {
+                match: /spellCheck:\i(?=,autoFocus:)/,
+                replace: "$&,autoCorrect:$self.useAutoCorrect()"
+            },
+            predicate: () => settings.store.enableAutoCorrect
+        },
+        {
+            find: "onPasteCapture:this.handlePasteCapture",
+            replacement: {
+                match: /autoCorrect:"off"(?=,"data-can-focus":)/,
+                replace: 'autoCorrect:this.props.autoCorrect??"off"'
+            },
+            predicate: () => settings.store.enableAutoCorrect
+        }
     ],
     renderMessageAccessory(props) {
         if (!isEquicordGuild(props.message.channel_id)) return null;
@@ -434,6 +571,10 @@ export default definePlugin({
             voiceState?.channelId === currentUserVoiceState?.channelId ||
             !UserGuildSettingsStore.isChannelMuted(guildId, voiceState?.channelId!)
         );
+    },
+    useAutoCorrect() {
+        const { autoCorrect } = settings.use(["autoCorrect"]);
+        return autoCorrect ? "on" : "off";
     },
     getPlatformUrl(platform, args) {
         switch (platform) {

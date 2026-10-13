@@ -82,9 +82,9 @@ export default definePlugin({
             predicate: () => settings.store.file
         },
         {
-            find: ".DELETE,onClick(){let",
+            find: "#{intl::DELETE_SERVER_ENTER_NAME}",
             replacement: {
-                match: /let\{name:\i\}=(\i)\.guild/,
+                match: /\{name:\i\}\s*=\s*(\i)\.guild/,
                 replace: "$self.HandleGuildDeleteModal($1);$&"
             },
             predicate: () => settings.store.noDeleteSafety

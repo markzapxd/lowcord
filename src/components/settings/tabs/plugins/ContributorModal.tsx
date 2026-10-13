@@ -13,7 +13,7 @@ import { Paragraph } from "@components/Paragraph";
 import { EquicordDevsById, TestcordDevsById, VencordDevsById } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
 import { fetchUserProfile } from "@utils/discord";
-import { pluralise } from "@utils/misc";
+import { pluralize } from "@utils/misc";
 import { RenderModalProps, User } from "@vencord/discord-types";
 import { Modal, openModal, showToast, useEffect, useMemo, UserProfileStore, useStateFromStores } from "@webpack/common";
 
@@ -35,15 +35,15 @@ function ContributorModal({ user, modalProps }: { user: User; modalProps: Render
 
     useEffect(() => {
         if (!profile && !user.bot && user.id)
-            fetchUserProfile(user.id);
+            void fetchUserProfile(user.id).catch(() => { });
     }, [user.id, user.bot, profile]);
 
-    const githubName = profile?.connectedAccounts?.find(a => a.type === "github")?.name;
+    const dev = VencordDevsById[user.id] || EquicordDevsById[user.id] || TestcordDevsById[user.id];
+    const githubName = profile?.connectedAccounts?.find(a => a.type === "github")?.name || dev?.github;
     const website = profile?.connectedAccounts?.find(a => a.type === "domain")?.name;
 
     const plugins = useMemo(() => {
         const allPlugins = Object.values(Plugins);
-        const dev = VencordDevsById[user.id] || EquicordDevsById[user.id] || TestcordDevsById[user.id];
         const pluginsByAuthor = dev
             ? allPlugins.filter(p => p.authors?.includes(dev))
             : allPlugins.filter(p =>
@@ -77,7 +77,7 @@ function ContributorModal({ user, modalProps }: { user: User; modalProps: Render
                 plugins.length
                     ? (
                         <Paragraph>
-                            {user.username} has {ContributedHyperLink} to {pluralise(plugins.length, "plugin")}!
+                            {user.username} has {ContributedHyperLink} to {pluralize(plugins.length, "plugin")}!
                         </Paragraph>
                     )
                     : (

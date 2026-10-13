@@ -226,8 +226,8 @@ export default definePlugin({
         {
             find: "missing validator for this component",
             replacement: {
-                match: /(\i)(\.type\)\{case \i\.\i\.BUTTON):return null;/,
-                replace: "$1$2:return ($self.handleButtonClick($1),null);"
+                match: /(case \i\.\i\.CHECKBOX\s*:)\s*return null;/,
+                replace: "$1return ($self.handleButtonClick(arguments[0]),null);"
             }
         }
     ],
@@ -239,10 +239,7 @@ export default definePlugin({
         await Native.checkytdlp();
         await Native.checkdeno();
         await Native.checkffmpeg();
-
-        const downloadFolder = settings.store.downloadFolder || undefined;
-        const newVideoDir = await Native.start(downloadFolder);
-        await DataStore.set("yt-downloader-video-dir", newVideoDir);
+        await Native.start();
     },
     stop: async () => {
         await Native.stop();

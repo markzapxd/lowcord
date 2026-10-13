@@ -13,7 +13,7 @@ import { fetchUserProfile, getCurrentChannel, openUserProfile } from "@utils/dis
 import definePlugin, { OptionType } from "@utils/types";
 import { User } from "@vencord/discord-types";
 import { findComponentByCodeLazy } from "@webpack";
-import { ContextMenuApi, Menu, useEffect, UserStore } from "@webpack/common";
+import { ContextMenuApi, Menu, openUserProfileModal, useEffect, UserStore } from "@webpack/common";
 
 interface UserProfileProps {
     popoutProps: Record<string, any>;
@@ -39,10 +39,12 @@ const AccountPanelContextMenu = ErrorBoundary.wrap(() => {
                 disabled={getCurrentChannel()?.getGuildId() == null}
                 action={async e => {
                     if (isPluginEnabled(alwaysExpandProfiles.name)) {
-                        const user = await fetchUserProfile(UserStore.getCurrentUser().id, {
-                            guild_id: prioritizeServerProfile ? undefined : getCurrentChannel()?.getGuildId()
-                        }, false);
-                        return openUserProfile(user!.userId);
+                        const userId = UserStore.getCurrentUser().id;
+                        const guildId = prioritizeServerProfile ? undefined : getCurrentChannel()?.getGuildId();
+                        try {
+                            await fetchUserProfile(userId, { guild_id: guildId }, false);
+                            return openUserProfileModal({ userId, guildId, channelId: getCurrentChannel()?.id });
+                        } catch { }
                     }
                     openAlternatePopout = true;
                     accountPanelRef.current?.click();
@@ -146,7 +148,7 @@ function ServerProfileLauncher({ popoutProps, userId, guildId }: { popoutProps: 
         popoutProps.onRequestClose?.();
         fetchUserProfile(userId, { guild_id: guildId }, false).then(user => {
             if (user) openUserProfile(user.userId);
-        });
+        }).catch(() => { });
     }, []);
     return null;
 }

@@ -1,7 +1,7 @@
 {
     "name": "testcord",
     "private": "true",
-    "version": "2.2.0",
+    "version": "2.3.0",
     "description": "The less stable fork of Equicord",
     "homepage": "https://github.com/TestcordDev/Testcord#readme",
     "bugs": {
@@ -37,8 +37,11 @@
         "lint-styles:fix": "pnpm lint-styles --fix",
         "lint:fix": "pnpm lint --fix",
         "lint:intl": "node scripts/lintIntl.mjs",
+        "lint:css": "node scripts/lintCssSelectors.mjs",
         "lint:patches": "node scripts/lintPatches.mjs",
-        "test": "pnpm buildStandalone && pnpm testTsc && pnpm lint:fix && pnpm lint-styles && pnpm lint:intl && pnpm lint:patches && pnpm generatePluginJson",
+        "lint:runtime-hooks": "node scripts/lintRuntimeInterposition.mjs",
+        "test:unit": "node --import tsx --test tests/**/*.test.ts",
+        "test": "pnpm buildStandalone && pnpm testTsc && pnpm lint:fix && pnpm lint-styles && pnpm lint:intl && pnpm lint:css && pnpm lint:patches && pnpm generatePluginJson",
         "testWeb": "pnpm lint:fix && pnpm buildWeb && pnpm testTsc",
         "testTsc": "tsc --noEmit",
         "depCheck": "node scripts/depCheck.mjs",
@@ -101,7 +104,7 @@
         "typescript-transform-paths": "^3.5.6",
         "zip-local": "^0.3.5"
     },
-    "packageManager": "pnpm@11.17.0",
+    "packageManager": "pnpm@12.5.1",
     "engines": {
         "node": ">=22"
     }

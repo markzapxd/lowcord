@@ -65,6 +65,7 @@ const messageCtxPatch: NavContextMenuPatchCallback = (children, { message }: { m
             id="vc-hidemessages"
             label="Hide"
             icon={EyeIcon}
+            leadingAccessory={{ type: "icon", icon: EyeIcon }}
             action={() => hideMessage(message.id, message.channel_id)}
         />
     ));
@@ -84,6 +85,7 @@ const userCtxPatch: NavContextMenuPatchCallback = (children, { channel }: UserCo
             id="vc-hidemessages-dm"
             label={hidden ? "Unhide DM" : "Hide DM"}
             icon={EyeIcon}
+            leadingAccessory={{ type: "icon", icon: EyeIcon }}
             action={() => toggleDm(channel.id)}
         />
     ));
@@ -101,7 +103,7 @@ export default definePlugin({
     name: "HideMessages",
     description: "Temporarily hide messages and DMs until you restart.",
     dependencies: ["MessagePopoverAPI"],
-    tags: ["Chat", "Utility"],
+    tags: ["Chat", "Utility", "Privacy"],
     authors: [EquicordDevs.yash],
     patches: [
         {

@@ -45,8 +45,8 @@
     display: grid;
     min-height: 40px;
     gap: 10px;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    align-items: center;
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+    align-items: flex-start;
 }
 
 .vc-plugins-filter-control {
@@ -276,86 +276,23 @@
     width: 18px;
     height: 18px;
     display: block;
-    border-radius: 4px;
 }
 
 .vc-plugins-section-heading {
     margin-top: 28px !important;
 }
 
-.vc-plugins-grid .vc-addon-card {
-    min-height: 148px;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    background: var(--background-base-low);
-    border-color: var(--border-subtle);
-    box-shadow: none;
-}
-
-.vc-plugins-grid .vc-addon-card:hover {
-    background: var(--background-surface-high);
-    transform: none;
-    box-shadow: var(--elevation-low);
-}
-
-.vc-plugins-grid .vc-addon-header {
-    box-sizing: border-box;
-    padding: 14px 14px 8px;
-    margin: 0;
-    align-items: center;
-    gap: 8px;
-}
-
-.vc-plugins-grid .vc-addon-name-author {
-    min-width: 0;
-    flex: 1 1 auto;
-}
-
-.vc-plugins-grid .vc-addon-name {
-    min-height: 28px;
-}
-
-.vc-plugins-grid .vc-addon-title-container {
-    height: 1.4em;
-}
-
-.vc-plugins-grid .vc-addon-note {
-    /* note renders with inline line-height: 1.25em (AddonCard.tsx), so the clip
-       height must be a multiple of that, not the CSS line-height. overflow:hidden
-       is the real guard; -webkit-line-clamp only adds the ellipsis when it counts
-       correctly (it fails on nested markup). flex: 0 0 auto keeps it from pushing
-       the footer in the card's flex column. */
-    height: 2.5em;
-    flex: 0 0 auto;
-    overflow: hidden;
-    margin: 0 14px 12px;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    color: var(--text-muted);
-}
-
-.vc-plugins-grid .vc-addon-card:hover .vc-addon-note {
-    color: var(--text-default);
-}
-
-.vc-plugins-grid .vc-addon-footer {
-    margin-top: auto;
-    padding: 10px 14px;
-    border-top: 1px solid var(--border-subtle);
-    background-color: color-mix(in srgb, var(--background-base-low) 72%, transparent);
-}
-
 .vc-plugins-card-meta {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
+    min-height: 20px;
 }
 
 .vc-plugins-card-source {
     min-width: 0;
+    flex: 1 1 auto;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -368,25 +305,37 @@
     white-space: nowrap;
 }
 
-.vc-plugins-card-tags {
-    flex: 0 1 auto;
+.vc-plugins-card-badges {
+    flex: 0 0 auto;
     display: flex;
-    flex-wrap: wrap;
+    align-items: center;
     justify-content: flex-end;
+    gap: 5px;
+    flex-wrap: nowrap;
+}
+
+.vc-plugins-card-tags {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
     gap: 4px;
-    min-height: 20px;
 }
 
 .vc-plugins-card-tag {
-    max-width: 90px;
-    padding: 2px 6px;
+    max-width: 85px;
+    height: 20px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
     border: 1px solid var(--border-subtle);
     border-radius: 6px;
     background-color: var(--background-surface-high);
     color: var(--text-muted);
     font-size: 10px;
     font-weight: 600;
-    line-height: 14px;
+    line-height: 18px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -394,11 +343,15 @@
 
 .vc-plugins-card-stability {
     flex: 0 0 auto;
-    padding: 2px 6px;
+    height: 20px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
     border-radius: 6px;
     font-size: 10px;
     font-weight: 700;
-    line-height: 14px;
+    line-height: 18px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     white-space: nowrap;
@@ -414,10 +367,6 @@
     color: var(--status-danger-text, #f04747);
 }
 
-.vc-plugins-grid .vc-addon-card-disabled {
-    opacity: 0.68;
-}
-
 .vc-plugins-stats-container {
     margin-top: 16px;
     gap: 16px;
@@ -428,6 +377,95 @@
 
 .vc-plugins-ui-elements {
     margin-top: 16px;
+}
+
+.vc-settings-tab [class*="hasTags__0edde"] [class*="comboBoxInputContainer__0edde"] {
+    display: flex;
+    flex-direction: column-reverse;
+}
+
+.vc-settings-tab [class*="hasTags__0edde"] [class*="tag_cfee8f"] {
+    justify-content: space-between;
+    width: 100%;
+}
+
+.vc-settings-tab [class*="hasTags__0edde"] [class*="comboBoxInput__0edde"] {
+    width: 100%;
+}
+
+.vc-settings-tab [class*="chevronButton__0edde"] {
+    padding-top: 9px;
+    align-items: start;
+}
+
+.vc-plugins-warning-badge {
+    height: 34px;
+    width: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: transparent;
+    cursor: default;
+    flex-shrink: 0;
+}
+
+.vc-plugins-warning-icon {
+    width: 26px;
+    height: 26px;
+    object-fit: contain;
+    display: block;
+    image-rendering: -webkit-optimize-contrast;
+}
+
+.vc-plugins-card-warning {
+    flex: 0 0 auto;
+    height: 22px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 18px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    cursor: default;
+}
+
+.vc-plugins-warning-badge.vc-plugins-warning-clickable,
+.vc-plugins-card-warning.vc-plugins-warning-clickable {
+    cursor: pointer;
+}
+
+.vc-plugins-card-warning.vc-plugins-warning-clickable:hover,
+.vc-plugins-warning-badge.vc-plugins-warning-clickable:hover {
+    opacity: 0.85;
+}
+
+.vc-plugins-card-warning.vc-plugins-plugin-warning-experimental,
+.vc-plugins-card-warning[class*="experimental"] {
+    background-color: color-mix(in srgb, #e67e22 20%, transparent);
+    color: #f39c12;
+    border: 1px solid color-mix(in srgb, #e67e22 45%, transparent);
+}
+
+.vc-plugins-card-warning.vc-plugins-plugin-warning-legacy,
+.vc-plugins-card-warning[class*="legacy"] {
+    background-color: color-mix(in srgb, #d35400 20%, transparent);
+    color: #e67e22;
+    border: 1px solid color-mix(in srgb, #d35400 45%, transparent);
+}
+
+.vc-plugins-warning-icon-small {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+    display: inline-block;
+    image-rendering: -webkit-optimize-contrast;
+    flex-shrink: 0;
 }
 
 @media (width <= 720px) {

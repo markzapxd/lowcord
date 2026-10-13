@@ -13,7 +13,7 @@ import { Logger } from "@utils/Logger";
 import definePlugin, { makeRange, OptionType } from "@utils/types";
 import type { Channel, Message } from "@vencord/discord-types";
 import { ApplicationIntegrationType, MessageFlags } from "@vencord/discord-types/enums";
-import { AuthenticationStore, Constants, EditMessageStore, FluxDispatcher, MessageActions, MessageTypeSets, PermissionsBits, PermissionStore, PinActions, RestAPI, Toasts, WindowStore } from "@webpack/common";
+import { AuthenticationStore, Constants, EditMessageStore, FluxDispatcher, MessageActions, MessageTypeSets, PermissionsBits, PermissionStore, PinActions, RestAPI, showToast,WindowStore } from "@webpack/common";
 
 import { AdditionalReactEmojisSetting, MAX_ADDITIONAL_REACT_EMOJIS, ReactEmojiSetting } from "./ReactEmojiSetting";
 
@@ -260,14 +260,9 @@ export const settings = definePluginSettings({
 });
 
 function showWarning(message: string) {
-    Toasts.show({
-        message,
-        type: Toasts.Type.FAILURE,
-        id: Toasts.genId(),
-        options: {
+    showToast(message, "failure", {
             duration: 3000
-        }
-    });
+        });
 }
 
 function clearClickTimeouts() {
@@ -457,7 +452,8 @@ async function executeAction(
     action: ClickAction,
     msg: Message,
     channel: Channel,
-    event: MouseEvent
+    event: MouseEvent,
+    triggerModifier: Modifier = "NONE"
 ) {
     const myId = AuthenticationStore.getId();
     const isMe = msg.author.id === myId;
@@ -510,7 +506,7 @@ async function executeAction(
             if (!canReply(msg)) return;
             if (!canSend(channel)) return;
 
-            const isShiftPress = event.shiftKey;
+            const isShiftPress = event.shiftKey && triggerModifier !== "SHIFT";
             const shouldMention = isPluginEnabled(NoReplyMentionPlugin.name)
                 ? NoReplyMentionPlugin.shouldMention(msg, isShiftPress)
                 : !isShiftPress;
@@ -657,7 +653,7 @@ export default definePlugin({
             }
 
             if (isModifierPressed(tripleClickModifier) && tripleClickAction !== "NONE") {
-                executeAction(tripleClickAction, msg, channel, event);
+                executeAction(tripleClickAction, msg, channel, event, tripleClickModifier);
                 pressedModifiers.clear();
             }
             doubleClickFired = false;
@@ -688,7 +684,7 @@ export default definePlugin({
                 if (!canSend(channel)) return;
                 if (msg.deleted === true) return;
                 if (canDoubleClick && isQuickDoubleClick) {
-                    executeAction(doubleClickAction, msg, channel, event);
+                    executeAction(doubleClickAction, msg, channel, event, doubleClickModifier);
                     pressedModifiers.clear();
                 }
             };
@@ -720,7 +716,7 @@ export default definePlugin({
 
             const executeSingleClick = () => {
                 if (!doubleClickFired && !doubleClickDetected && isModifierPressed(singleClickModifier) && singleClickAction !== "NONE") {
-                    executeAction(singleClickAction, msg, channel, event);
+                    executeAction(singleClickAction, msg, channel, event, singleClickModifier);
                     pressedModifiers.clear();
                 }
                 resetClickState();

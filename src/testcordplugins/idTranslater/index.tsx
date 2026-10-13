@@ -239,9 +239,10 @@ export default definePlugin({
   name: "ID Translater",
   description:
     "Automatically translates Discord IDs to clickable @ mentions or # references",
-    tags: ["Chat", "Utility"],
+    tags: ["Chat", "Utility", "Testcord Modified"],
   authors: [TestcordDevs.x2b],
   isModified: true,
+  testcordModified: true,
 
   settings,
   modifyIncomingMessage,
@@ -250,7 +251,7 @@ export default definePlugin({
     {
       find: "!1,hideSimpleEmbedContent",
       replacement: {
-        match: /(let{toAST:.{0,125}?)\(null!=\i\?\i:\i\).content/,
+        match: /(let{toAST:.{0,125}?)(?:\(null!=\i\?\i:\i\)|\(\i\?\?\i\))\.content/,
         replace:
           "const idTranslaterContent=$self.modifyIncomingMessage(arguments[2]?.contentMessage??arguments[1]);$1idTranslaterContent",
       },

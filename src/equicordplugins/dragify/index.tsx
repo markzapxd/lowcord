@@ -13,12 +13,12 @@ import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType } from "@utils/types";
 import type { Channel } from "@vencord/discord-types";
 import { ChannelType } from "@vencord/discord-types/enums";
-import { ChannelStore, GuildStore, IconUtils, RelationshipStore, SelectedChannelStore, showToast, Toasts, UserStore } from "@webpack/common";
+import { ChannelStore, GuildStore, IconUtils, RelationshipStore, SelectedChannelStore, showToast, UserStore } from "@webpack/common";
 
 import { beginDrag as beginSessionDrag, clearDragState, getLastDropAt, hasActiveDrag, isGuildDragActive, isInputDragSource, isUserDragActive, markDrop, markInputDragSource, scheduleGuildCleanup, shouldIgnoreDrop, startDragWatchdog, stopDragState, touchDrag } from "./dragState";
 import { type GhostState, hideGhost as hideDragGhost, isGhostVisible, mountGhost as mountDragGhost, scheduleGhostPosition as scheduleDragGhostPosition, showGhost as showDragGhost, unmountGhost as unmountDragGhost } from "./ghost";
 import { clearInviteCache, createInvite, isGroupMessageChannel } from "./invite";
-import { type ChannelTarget, inspectDragEvent, inspectInputTarget, type ResolvedDragTarget } from "./targets";
+import { type ChannelTarget, inspectDragEvent, type ResolvedDragTarget } from "./targets";
 import { collectPayloadStrings, type DropEntity, extractStrings, parseDragifyPayload, parseFromStrings, serializeDragEntity } from "./utils";
 
 const logger = new Logger("Dragify");
@@ -37,11 +37,7 @@ type DragifyRuntime = {
 
 let pluginInstance: DragifyRuntime | null = null;
 let transparentDragImage: HTMLCanvasElement | null = null;
-let foreignDragParseCache: ReturnType<typeof parseFromStrings> | undefined;
-
-function resetForeignDragParseCache() {
-    foreignDragParseCache = undefined;
-}
+let dragEndTimer: number | undefined;
 
 function getTransparentDragImage(): HTMLCanvasElement | null {
     if (typeof document === "undefined") return null;
@@ -186,7 +182,7 @@ export default definePlugin({
         {
             find: "__invalid_threadMainContent",
             replacement: {
-                match: /className:\i\.\i,onClick:\i,"aria-label":(?=.{0,100}__invalid_threadMainContent)/,
+                match: /className:\i\.\i,onClick:\i,(?:onAuxClick:\i,)?"aria-label":(?=.{0,100}__invalid_threadMainContent)/,
                 replace: "draggable:!0,onDragStart:e=>$self.onChannelDragStart(e),$&"
             }
         },
@@ -298,7 +294,7 @@ export default definePlugin({
         } catch (error) {
             clearDragState();
             logger.error("Failed handling drop", error);
-            showToast("Dragify failed to handle drop.", Toasts.Type.FAILURE);
+            showToast("Dragify failed to handle drop.", "failure");
         }
     },
 
@@ -440,6 +436,10 @@ export default definePlugin({
         window.removeEventListener("drag", this.globalDragMove, true);
         window.removeEventListener("dragover", this.globalDragMove, true);
         window.removeEventListener("dragend", this.globalDragEnd, true);
+        if (dragEndTimer !== undefined) {
+            clearTimeout(dragEndTimer);
+            dragEndTimer = undefined;
+        }
         stopDragState();
         clearInviteCache();
         this.unmountGhost();
@@ -453,13 +453,8 @@ export default definePlugin({
         const { dataTransfer } = event;
         if (!dataTransfer || dataTransfer.files?.length) return;
         if (!hasActiveDrag() && !hasDragifyTransfer(dataTransfer)) {
-            if (foreignDragParseCache === undefined) {
-                const payloads = extractStrings(dataTransfer);
-                const parsed = parseFromStrings(payloads, { ChannelStore, GuildStore, UserStore });
-                if (!parsed) return;
-                foreignDragParseCache = parsed;
-            }
-            if (!foreignDragParseCache) return;
+            const payloads = extractStrings(dataTransfer);
+            if (!parseFromStrings(payloads, { ChannelStore, GuildStore, UserStore })) return;
         }
 
         event.preventDefault();
@@ -468,7 +463,6 @@ export default definePlugin({
     },
 
     globalDrop: async (event: DragEvent) => {
-        resetForeignDragParseCache();
         const inst = pluginInstance;
         if (!inst || !inst.isMessageInputEvent(event)) return;
         if (isInputDragSource()) return;
@@ -504,7 +498,6 @@ export default definePlugin({
     },
 
     globalDragStart: (event: DragEvent) => {
-        resetForeignDragParseCache();
         const inst = pluginInstance;
         if (!inst || !event.dataTransfer) return;
 
@@ -549,8 +542,9 @@ export default definePlugin({
     },
 
     globalDragEnd: (_event: DragEvent) => {
-        resetForeignDragParseCache();
-        setTimeout(() => {
+        if (dragEndTimer !== undefined) clearTimeout(dragEndTimer);
+        dragEndTimer = window.setTimeout(() => {
+            dragEndTimer = undefined;
             if (Date.now() - getLastDropAt() < 100) return;
             clearDragState();
             hideDragGhost();
@@ -570,7 +564,7 @@ export default definePlugin({
     },
 
     isMessageInputEvent(event: DragEvent): boolean {
-        const inspection = inspectInputTarget(event);
+        const inspection = inspectDragTarget(event, this);
         return inspection.hasMessageInput || (settings.store.allowChatBodyDrop && inspection.hasChatBody);
     },
 

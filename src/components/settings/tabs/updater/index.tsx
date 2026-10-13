@@ -28,12 +28,12 @@ import { Paragraph } from "@components/Paragraph";
 import { SettingsTab, wrapTab } from "@components/settings/tabs/BaseTab";
 import { Margins } from "@utils/margins";
 import { useAwaiter } from "@utils/react";
-import { getRepo, isNewer, UpdateLogger } from "@utils/updater";
+import { getRepo, UpdateLogger } from "@utils/updater";
 import { React, Select } from "@webpack/common";
 
 import gitHash from "~git-hash";
 
-import { HashLink, Newer, Updatable } from "./Components";
+import { HashLink, Updatable } from "./Components";
 
 interface CommonProps {
     repo: string;
@@ -91,21 +91,23 @@ function Updater() {
                 Control how Testcord keeps itself up to date. You can choose to update automatically in the background or be notified when new updates are available.
             </Paragraph>
 
-            <FormSwitch
-                title="Automatically update"
-                description="When enabled, Testcord will automatically download and install updates in the background without asking for confirmation. You'll need to restart Discord to apply the changes."
-                value={settings.autoUpdate}
-                onChange={(v: boolean) => settings.autoUpdate = v}
-                hideBorder
-            />
-            <FormSwitch
-                value={settings.autoUpdateNotification}
-                onChange={(v: boolean) => settings.autoUpdateNotification = v}
-                title="Get notified when an automatic update completes"
-                description="Receive a notification when Testcord finishes downloading an update in the background, so you know when to restart Discord."
-                disabled={!settings.autoUpdate}
-                hideBorder
-            />
+            <div className="vc-settings-switches">
+                <FormSwitch
+                    title="Automatically update"
+                    description="When enabled, Testcord will automatically download and install updates in the background without asking for confirmation. You\'ll need to restart Discord to apply the changes."
+                    value={settings.autoUpdate}
+                    onChange={(v: boolean) => settings.autoUpdate = v}
+                    hideBorder
+                />
+                <FormSwitch
+                    title="Get notified when an automatic update completes"
+                    description="Receive a notification when Testcord finishes downloading an update in the background, so you know when to restart Discord."
+                    value={settings.autoUpdateNotification}
+                    onChange={(v: boolean) => settings.autoUpdateNotification = v}
+                    disabled={!settings.autoUpdate}
+                    hideBorder
+                />
+            </div>
 
             <Divider className={Margins.top20} />
 
@@ -148,7 +150,7 @@ function Updater() {
             <Divider className={Margins.top20} />
 
             <Heading className={Margins.top20}>Updates</Heading>
-            {isNewer ? <Newer {...commonProps} /> : <Updatable {...commonProps} />}
+            <Updatable key={settings.updaterBranch} {...commonProps} />
         </SettingsTab>
     );
 }

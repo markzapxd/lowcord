@@ -4,8 +4,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Toasts } from "@webpack/common";
-
 import { Auth, authorize, getToken, updateAuth } from "./auth";
 import { Review, ReviewDBCurrentUser, ReviewDBUser, ReviewType } from "./entities";
 import { settings } from "./settings";
@@ -36,6 +34,25 @@ interface ReviewVotesData {
 
 const WarningFlag = 0b00000010;
 
+const reviewsCache = new Map<string, { at: number; data: UserReviewsData; }>();
+const REVIEWS_CACHE_TTL = 45_000;
+const REVIEWS_CACHE_LIMIT = 100;
+
+function invalidateReviewsCache() {
+    reviewsCache.clear();
+}
+
+function pruneReviewsCache(now: number) {
+    for (const [key, entry] of reviewsCache) {
+        if (now - entry.at >= REVIEWS_CACHE_TTL) reviewsCache.delete(key);
+    }
+    while (reviewsCache.size > REVIEWS_CACHE_LIMIT) {
+        const oldest = reviewsCache.keys().next().value;
+        if (oldest === undefined) break;
+        reviewsCache.delete(oldest);
+    }
+}
+
 async function rdbRequest<T = unknown>(path: string, options: RequestInit = {}): Promise<T | null> {
     const headers: Record<string, string> = {
         Accept: "application/json",
@@ -51,7 +68,7 @@ async function rdbRequest<T = unknown>(path: string, options: RequestInit = {}):
         ...options,
         headers,
     }).catch(err => {
-        showToast("Network error: Failed to connect to ReviewDB.", Toasts.Type.FAILURE);
+        showToast("Network error: Failed to connect to ReviewDB.", "failure");
         return null;
     });
 
@@ -61,7 +78,7 @@ async function rdbRequest<T = unknown>(path: string, options: RequestInit = {}):
 
     if (!res.ok) {
         const message = data?.message ?? `ReviewDB: Request failed with status ${res.status}`;
-        showToast(message, Toasts.Type.FAILURE);
+        showToast(message, "failure");
         return null;
     }
 
@@ -76,6 +93,11 @@ export async function getReviews(id: string, { limit, offset = 0, fetchVotes = f
     if (flags) params.append("flags", String(flags));
     if (offset) params.append("offset", String(offset));
     if (limit) params.append("limit", String(limit));
+
+    const cacheKey = `${id}:${params.toString()}:${fetchVotes ? 1 : 0}`;
+    const now = Date.now();
+    const cached = reviewsCache.get(cacheKey);
+    if (cached && now - cached.at < REVIEWS_CACHE_TTL) return cached.data;
 
     const votesPromise = fetchVotes ? getReviewVotes(id).catch(() => []) : Promise.resolve([]);
     const req = await fetch(`${API_URL}/users/${id}/reviews?${params}`);
@@ -92,7 +114,7 @@ export async function getReviews(id: string, { limit, offset = 0, fetchVotes = f
         };
 
     if (!req.ok) {
-        showToast(res.message, Toasts.Type.FAILURE);
+        showToast(res.message, "failure");
         return {
             ...res,
             reviews: [
@@ -114,7 +136,11 @@ export async function getReviews(id: string, { limit, offset = 0, fetchVotes = f
         };
     }
 
-    if (!fetchVotes || res.reviews.length === 0) return res;
+    if (!fetchVotes || res.reviews.length === 0) {
+        pruneReviewsCache(Date.now());
+        reviewsCache.set(cacheKey, { at: Date.now(), data: res });
+        return res;
+    }
 
     const votes = await votesPromise;
     if (votes.length === 0) return res;
@@ -129,6 +155,8 @@ export async function getReviews(id: string, { limit, offset = 0, fetchVotes = f
         userVote: voteByReviewId.get(review.id) ?? null,
     }));
 
+    pruneReviewsCache(Date.now());
+    reviewsCache.set(cacheKey, { at: Date.now(), data: res });
     return res;
 }
 
@@ -140,7 +168,7 @@ export async function getReviewVotes(id: string): Promise<ReviewVote[]> {
     return res?.votes ?? [];
 }
 
-export async function addReview(review): Promise<UserReviewsData | null> {
+export async function addReview(review: { userid: string; comment: string; }): Promise<UserReviewsData | null> {
 
     const token = await getToken();
     if (!token) {
@@ -154,6 +182,7 @@ export async function addReview(review): Promise<UserReviewsData | null> {
         body: JSON.stringify(review),
     });
     if (data?.message) showToast(data.message);
+    invalidateReviewsCache();
     return data;
 }
 
@@ -165,6 +194,7 @@ export async function deleteReview(id: number): Promise<UserReviewsData | null> 
         })
     });
     if (data?.message) showToast(data.message);
+    invalidateReviewsCache();
     return data;
 }
 
@@ -193,6 +223,7 @@ export async function voteReview(id: number, isUpvote: boolean) {
 
     if (!data) return false;
 
+    invalidateReviewsCache();
     return true;
 }
 
@@ -210,6 +241,7 @@ export async function deleteReviewVote(id: number) {
 
     if (!data) return false;
 
+    invalidateReviewsCache();
     return true;
 }
 
@@ -224,7 +256,7 @@ async function patchBlock(action: "block" | "unblock", userId: string) {
 
     if (!data) return;
 
-    showToast(`Successfully ${action}ed user`, Toasts.Type.SUCCESS);
+    showToast(`Successfully ${action}ed user`, "success");
 
     if (Auth?.user?.blockedUsers) {
         const newBlockedUsers = action === "block"

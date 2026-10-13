@@ -7,19 +7,19 @@
 import "./VencordTab.css";
 
 import { openNotificationLogModal } from "@api/Notifications/notificationLog";
-import { plugins } from "@api/PluginManager";
 import { useSettings } from "@api/Settings";
 import { Button } from "@components/Button";
 import { Divider } from "@components/Divider";
 import { FormSwitch } from "@components/FormSwitch";
 import { Heading } from "@components/Heading";
-import { FolderIcon, GithubIcon, LogIcon, PaintbrushIcon, RestartIcon } from "@components/Icons";
+import { DiscordIcon, FolderIcon, GithubIcon, LogIcon, PaintbrushIcon, RestartIcon } from "@components/Icons";
 import { Notice } from "@components/Notice";
 import { Paragraph } from "@components/Paragraph";
 import { openContributorModal, openPluginModal, SettingsTab, wrapTab } from "@components/settings";
 import { QuickAction, QuickActionCard } from "@components/settings/QuickAction";
 import { SpecialCard } from "@components/settings/SpecialCard";
 import BadgeAPI from "@plugins/_api/badges";
+import SettingsPlugin from "@plugins/_core/settings";
 import { gitRemote } from "@shared/vencordUserAgent";
 import { DONOR_ROLE_ID, EQUICORD_GUILD_ID, IS_WINDOWS, VC_DONOR_ROLE_ID, VC_GUILD_ID } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
@@ -49,19 +49,18 @@ type KeysOfType<Object, Type> = {
 }[keyof Object];
 
 function Switches() {
-    const settings = useSettings(["useQuickCss", "enableReactDevtools", "mainWindowFrameless", "frameless", "winNativeTitleBar", "transparent", "winCtrlQ", "disableMinSize"]);
+    const settings = useSettings(["useQuickCss", "enableReactDevtools", "mainWindowFrameless", "frameless", "nativeTitleBar", "transparent", "winCtrlQ", "disableMinSize", "useTestcordIcon"]);
 
     const Switches = [
         {
+            key: "useTestcordIcon",
+            title: "Use TestCord Icon",
+            description: "Replace the standard Discord logo icon with the custom TestCord icon.",
+        },
+        {
             key: "useQuickCss",
             title: "Enable Custom CSS",
-            description: "Load custom CSS from the QuickCSS editor. This allows you to customize Discord's appearance with your own styles.",
-        },
-        !IS_WEB && {
-            key: "enableReactDevtools",
-            title: "Enable React Developer Tools",
-            description: "Enable the React Developer Tools extension for debugging Discord's React components. Useful for plugin development.",
-            restartRequired: true,
+            description: "Apply your configured QuickCSS"
         },
         (!IS_WEB && !IS_DISCORD_DESKTOP || !IS_WINDOWS) && {
             key: "mainWindowFrameless",
@@ -77,7 +76,7 @@ function Switches() {
                 restartRequired: true,
             }
             : {
-                key: "winNativeTitleBar",
+                key: "nativeTitleBar",
                 title: "Use Windows' native title bar instead of Discord's custom one",
                 description: "Replace Discord's custom title bar with the standard Windows title bar. This may improve compatibility with some window management tools.",
                 restartRequired: true,
@@ -95,14 +94,20 @@ function Switches() {
         IS_DISCORD_DESKTOP && {
             key: "disableMinSize",
             title: "Disable Minimum Window Size",
-            description: "Allow the Discord window to be resized smaller than its default minimum size. Useful for tiling window managers or small screens.",
-            restartRequired: true,
+            description: "Allows you to resize the window to any size, even smaller than Discord's minimum size",
+            restartRequired: true
         },
         !IS_WEB && IS_WINDOWS && {
             key: "winCtrlQ",
             title: "Register Ctrl+Q as shortcut to close Discord",
             description: "Add Ctrl+Q as a keyboard shortcut to close Discord. This provides an alternative to Alt+F4 for quickly closing the application.",
             restartRequired: true,
+        },
+        !IS_WEB && {
+            key: "enableReactDevtools",
+            title: "Enable React Developer Tools",
+            description: "Mainly useful for plugin developers. Ignore this if you don't know what it is",
+            restartRequired: true
         },
     ] satisfies Array<false | {
         key: KeysOfType<typeof settings, boolean>;
@@ -136,6 +141,7 @@ function Switches() {
                     )
                 }
                 value={settings[key]}
+                hideBorder
                 onChange={v => {
                     settings[key] = v;
 
@@ -149,7 +155,6 @@ function Switches() {
                         });
                     }
                 }}
-                hideBorder
             />
         );
     });
@@ -197,7 +202,7 @@ function EquicordSettings() {
                 <SpecialCard
                     title="Contributions"
                     subtitle="Thank you for contributing!"
-                    description="Since you've contributed to Equicord you now have a cool new badge!"
+                    description="Since you've contributed to Testcord you now have a cool new badge!"
                     cardImage={COZY_CONTRIB_IMAGE}
                     backgroundImage={CONTRIB_BACKGROUND_IMAGE}
                     backgroundColor="#EDCC87"
@@ -254,19 +259,28 @@ function EquicordSettings() {
                         )
                     }
                 />
+                <QuickAction
+                    Icon={DiscordIcon}
+                    text="Discord Server"
+                    action={() =>
+                        VencordNative.native.openExternal(
+                            "https://discord.gg/KTNXyDTXGb",
+                        )
+                    }
+                />
             </QuickActionCard>
 
             <Divider className={Margins.top20} />
 
             <Heading className={Margins.top20}>Client Settings</Heading>
             <Paragraph className={Margins.bottom16}>
-                Configure how Equicord behaves and integrates with Discord. These settings affect the Discord client's appearance and behavior.
+                Configure how Testcord behaves and integrates with Discord. These settings affect the Discord client's appearance and behavior.
             </Paragraph>
             <Notice.Info className={Margins.bottom20} style={{ width: "100%" }}>
                 You can customize where this settings section appears in Discord's settings menu by configuring the{" "}
                 <a
                     role="button"
-                    onClick={() => openPluginModal(plugins.Settings)}
+                    onClick={() => openPluginModal(SettingsPlugin)}
                     style={{ cursor: "pointer", color: "var(--text-link)" }}
                 >
                     Settings Plugin

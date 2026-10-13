@@ -6,11 +6,11 @@
 
 import { Button } from "@components/Button";
 import { Paragraph } from "@components/Paragraph";
-import { ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalRoot, ModalSize, openModal, type RenderModalProps } from "@utils/modal";
+import { ModalContent, ModalFooter, openModal, type RenderModalProps } from "@utils/modal";
 import { chooseFile } from "@utils/web";
-import { React, showToast, TextArea, TextInput, Toasts } from "@webpack/common";
+import { Alerts, Modal, React, showToast, TextArea, TextInput, Toasts } from "@webpack/common";
 
-import { importPresetObject, Preset, validatePreset } from "./presets";
+import { hasPreset, importPresetObject, Preset, validatePreset } from "./presets";
 
 function parsePreview(text: string): Preset | null {
     if (!text.trim()) return null;
@@ -40,24 +40,36 @@ function ImportModal({ modalProps, onImported }: { modalProps: RenderModalProps;
 
     const doImport = () => {
         if (!preview) return;
-        const stored = importPresetObject(preview, effectiveName || undefined);
-        if (stored) {
-            showToast(`Imported preset "${stored}".`, Toasts.Type.SUCCESS);
-            onImported();
-            modalProps.onClose();
-        } else {
-            showToast("Could not import that preset.", Toasts.Type.FAILURE);
+        const run = () => {
+            const stored = importPresetObject(preview, effectiveName.trim() || undefined);
+            if (stored) {
+                showToast(`Imported preset "${stored}".`, Toasts.Type.SUCCESS);
+                onImported();
+                modalProps.onClose();
+            } else {
+                showToast("Could not import that preset.", Toasts.Type.FAILURE);
+            }
+        };
+        // A hand-typed name overwrites a clash outright; without one, collisions
+        // get the " (imported)" suffix instead, so only the typed path needs asking.
+        if (renameTouched && hasPreset(effectiveName.trim())) {
+            Alerts.show({
+                title: "Overwrite preset",
+                body: `A preset named "${effectiveName.trim()}" already exists. Overwrite it?`,
+                confirmText: "Overwrite",
+                confirmColor: "danger",
+                cancelText: "Cancel",
+                onConfirm: run,
+            });
+            return;
         }
+        run();
     };
 
     const enabledCount = preview ? Object.values(preview.plugins).filter(p => p.enabled).length : 0;
 
     return (
-        <ModalRoot {...modalProps} size={ModalSize.MEDIUM}>
-            <ModalHeader className="vc-presets-modal-header">
-                <h2 className="vc-presets-modal-title">Import preset</h2>
-                <ModalCloseButton onClick={modalProps.onClose} />
-            </ModalHeader>
+        <Modal title={<h2 className="vc-presets-modal-title">Import preset</h2>} {...modalProps} size="lg">
             <ModalContent className="vc-presets-modal-content">
                 <Paragraph>Paste a preset string, or open a <code>.json</code> file.</Paragraph>
                 <TextArea
@@ -92,7 +104,7 @@ function ImportModal({ modalProps, onImported }: { modalProps: RenderModalProps;
                 <Button onClick={doImport} disabled={!preview || !effectiveName.trim()}>Import</Button>
                 <Button variant="secondary" onClick={modalProps.onClose}>Cancel</Button>
             </ModalFooter>
-        </ModalRoot>
+        </Modal>
     );
 }
 

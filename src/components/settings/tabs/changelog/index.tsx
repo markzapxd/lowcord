@@ -19,7 +19,8 @@ import { HashLink } from "@components/settings/tabs/updater/Components";
 import { Margins } from "@utils/margins";
 import { useAwaiter } from "@utils/react";
 import { getRepo, UpdateLogger } from "@utils/updater";
-import { Alerts, React, Toasts } from "@webpack/common";
+import { ToastPosition } from "@vencord/discord-types/enums";
+import { Alerts, React, showToast, Toasts } from "@webpack/common";
 
 import gitHash from "~git-hash";
 
@@ -313,9 +314,10 @@ function ChangelogContent() {
                 const updates = await VencordNative.updater.getUpdates();
 
                 if (updates.ok) {
+                    const found = updates.value.changes;
                     const currentRepoHash =
-                        updates.value.length > 0
-                            ? updates.value[0].hash
+                        found.length > 0
+                            ? found[0].hash
                             : gitHash;
                     setRecentlyChecked(lastRepoCheck === currentRepoHash);
                 }
@@ -340,9 +342,10 @@ function ChangelogContent() {
             // check if the repository was recently refreshed and that nothing has changed
             const updates = await VencordNative.updater.getUpdates();
             const lastRepoCheck = await getLastRepositoryCheckHash();
+            const found = updates.ok ? updates.value.changes : [];
             const currentRepoHash =
-                updates.ok && updates.value.length > 0
-                    ? updates.value[0].hash
+                found.length > 0
+                    ? found[0].hash
                     : gitHash;
 
             // If repository state hasn't changed since last check
@@ -352,64 +355,57 @@ function ChangelogContent() {
                 const logged = await ensureLocalUpdateLogged();
                 if (!logged) {
                     setChangelog([]);
-                    Toasts.show({
-                        message: "Already up to date with repository",
-                        id: Toasts.genId(),
-                        type: Toasts.Type.MESSAGE,
-                        options: {
-                            position: Toasts.Position.BOTTOM,
-                        },
+                    showToast("Already up to date with repository", "message", {
+                        position: ToastPosition.BOTTOM,
                     });
                 }
                 return;
             }
 
-            if (updates.ok && updates.value) {
-                if (updates.value.length > 0) {
-                    setChangelog(updates.value);
+            if (updates.ok && found.length > 0) {
+                setChangelog(found);
 
-                    const newPlgs = await getNewPlugins();
-                    const updatedPlgs = await getUpdatedPlugins();
-                    const newSettings = await getNewSettings();
-                    setNewPlugins(newPlgs);
-                    setUpdatedPlugins(updatedPlgs);
+                const newPlgs = await getNewPlugins();
+                const updatedPlgs = await getUpdatedPlugins();
+                const newSettings = await getNewSettings();
+                setNewPlugins(newPlgs);
+                setUpdatedPlugins(updatedPlgs);
 
-                    await saveUpdateSession(
-                        updates.value,
-                        newPlgs,
-                        updatedPlgs,
-                        newSettings,
-                        true,
-                    );
-                    await loadChangelogHistory();
-                    setRecentlyChecked(true);
+                await saveUpdateSession(
+                    found,
+                    newPlgs,
+                    updatedPlgs,
+                    newSettings,
+                    true,
+                );
+                await loadChangelogHistory();
+                setRecentlyChecked(true);
 
-                    Toasts.show({
-                        message: `Found ${updates.value.length} commit${updates.value.length === 1 ? "" : "s"} from repository`,
-                        id: Toasts.genId(),
-                        type: Toasts.Type.SUCCESS,
-                        options: {
-                            position: Toasts.Position.BOTTOM,
-                        },
-                    });
-                } else {
-                    const logged = await ensureLocalUpdateLogged();
-                    setRecentlyChecked(true);
-                    Toasts.show({
-                        message: logged
-                            ? "Logged commits from your latest update"
-                            : "Repository is up to date with your local copy",
-                        id: Toasts.genId(),
-                        type: logged ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE,
-                        options: {
-                            position: Toasts.Position.BOTTOM,
-                        },
-                    });
-                    if (!logged) {
-                        setChangelog([]);
-                    }
+                Toasts.show({
+                    message: `Found ${found.length} commit${found.length === 1 ? "" : "s"} from repository`,
+                    id: Toasts.genId(),
+                    type: Toasts.Type.SUCCESS,
+                    options: {
+                        position: Toasts.Position.BOTTOM,
+                    },
+                });
+            } else if (updates.ok) {
+                const logged = await ensureLocalUpdateLogged();
+                setRecentlyChecked(true);
+                Toasts.show({
+                    message: logged
+                        ? "Logged commits from your latest update"
+                        : "Repository is up to date with your local copy",
+                    id: Toasts.genId(),
+                    type: logged ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE,
+                    options: {
+                        position: Toasts.Position.BOTTOM,
+                    },
+                });
+                if (!logged) {
+                    setChangelog([]);
                 }
-            } else if (!updates.ok) {
+            } else {
                 throw new Error(
                     updates.error?.message || "Failed to fetch from repository",
                 );
@@ -422,13 +418,8 @@ function ChangelogContent() {
             setError(errorMessage);
 
             // funny little error toast hopefully doesn't happen!
-            Toasts.show({
-                message: "Could not fetch commits from repository",
-                id: Toasts.genId(),
-                type: Toasts.Type.FAILURE,
-                options: {
-                    position: Toasts.Position.BOTTOM,
-                },
+            showToast("Could not fetch commits from repository", "failure", {
+                position: ToastPosition.BOTTOM,
             });
         } finally {
             setIsLoading(false);
@@ -520,13 +511,8 @@ function ChangelogContent() {
                                         await clearChangelogHistory();
                                         await loadChangelogHistory();
                                         setShowHistory(false);
-                                        Toasts.show({
-                                            message: "All logs have been cleared",
-                                            id: Toasts.genId(),
-                                            type: Toasts.Type.SUCCESS,
-                                            options: {
-                                                position: Toasts.Position.BOTTOM,
-                                            },
+                                        showToast("All logs have been cleared", "success", {
+                                            position: ToastPosition.BOTTOM,
                                         });
                                     },
                                 });
@@ -552,7 +538,7 @@ function ChangelogContent() {
 
             <Heading className={Margins.top20}>Repository</Heading>
             <Paragraph className={Margins.bottom8}>
-                This is the GitHub repository where Equicord fetches updates from.
+                This is the GitHub repository where Testcord fetches updates from.
             </Paragraph>
             <Paragraph color="text-subtle">
                 {repoPending ? (
@@ -659,13 +645,8 @@ function ChangelogContent() {
                                                     Array.from(expandedLogs).filter(id => id !== logId),
                                                 ),
                                             );
-                                            Toasts.show({
-                                                message: "Log has been cleared",
-                                                id: Toasts.genId(),
-                                                type: Toasts.Type.SUCCESS,
-                                                options: {
-                                                    position: Toasts.Position.BOTTOM,
-                                                },
+                                            showToast("Log has been cleared", "success", {
+                                                position: ToastPosition.BOTTOM,
                                             });
                                         },
                                     });

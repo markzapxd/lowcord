@@ -4,19 +4,19 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { definePluginSettings } from "@api/Settings";
 import { BaseText } from "@components/BaseText";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { EquicordDevs } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
 import { classes } from "@utils/misc";
 import { useAwaiter } from "@utils/react";
-import definePlugin, { OptionType, PluginNative } from "@utils/types";
+import definePlugin from "@utils/types";
 import type { User } from "@vencord/discord-types";
 import { findCssClassesLazy } from "@webpack";
 import { Clickable, useState } from "@webpack/common";
 
-import { fetchActiveWarnings, getActionTags, getActiveRestrictionLabels, invalidateWarnings } from "./api";
+import { buildDsaBrowseUrl, fetchActiveWarnings, getActionTags, getActiveRestrictionLabels, invalidateWarnings, openLookupWindow } from "./api";
+import { settings } from "./settings";
 import managedStyle from "./style.css?managed";
 import type { BreachRecord, CordCatUserInfo, DsaAction } from "./types";
 
@@ -34,48 +34,15 @@ function ApiKeyNotice() {
     );
 }
 
-const settings = definePluginSettings({
-    cordCatApiKey: {
-        type: OptionType.STRING,
-        description: "CordCat API key (required). Get one at https://api.cord.cat",
-        default: "",
-    },
-    cordCatApiBaseUrl: {
-        type: OptionType.STRING,
-        description: "Base URL for the CordCat intelligence query API.",
-        default: "https://api.cord.cat",
-    },
-    dsaBrowseBaseUrl: {
-        type: OptionType.STRING,
-        description: "Base URL for the DSA lookup browse UI.",
-        default: "https://dsa.discord.food",
-    },
-});
-
 const cl = classNameFactory("vc-dsa-warnings-");
 const DMSideBarClasses = findCssClassesLazy("widgetPreviews");
 const MAX_VISIBLE_CARDS = 4;
-const Native = VencordNative.pluginHelpers.DsaWarnings as PluginNative<typeof import("./native")>;
 function getColorBrightness(color: number) {
     const red = (color >> 16) & 0xff;
     const green = (color >> 8) & 0xff;
     const blue = color & 0xff;
 
     return (red * 299 + green * 587 + blue * 114) / 1000;
-}
-
-function hasLightProfileTheme(displayProfile: { themeColors?: number[] | null; accentColor?: number | null; } | undefined) {
-    const colors = displayProfile?.themeColors?.filter(color => Number.isFinite(color)) ?? [];
-    if (colors.length > 0) {
-        const average = colors.reduce((total, color) => total + getColorBrightness(color), 0) / colors.length;
-        return average >= 160;
-    }
-
-    if (displayProfile?.accentColor != null) {
-        return getColorBrightness(displayProfile.accentColor) >= 160;
-    }
-
-    return false;
 }
 
 function formatLabel(value: string) {
@@ -98,14 +65,6 @@ function formatDate(value: string) {
         day: "numeric",
         year: "numeric"
     });
-}
-
-function buildDsaBrowseUrl(parsedId: string) {
-    const url = new URL(`${settings.store.dsaBrowseBaseUrl}/browse`);
-    url.searchParams.set("parsedId", parsedId);
-    url.searchParams.set("sort", "applicationDate");
-    url.searchParams.set("order", "desc");
-    return url.toString();
 }
 
 function buildCordCatUrl(parsedId: string) {
@@ -230,11 +189,9 @@ function ActionDetailRow({ label, value }: { label: string; value: string; }) {
 
 const DsaWarningsCollection = ErrorBoundary.wrap(function DsaWarningsCollection({
     user,
-    displayProfile,
     isSideBar = false
 }: {
     user: User;
-    displayProfile?: { themeColors?: number[] | null; accentColor?: number | null; };
     isSideBar?: boolean;
 }) {
     const [refreshKey, setRefreshKey] = useState(0);
@@ -247,7 +204,6 @@ const DsaWarningsCollection = ErrorBoundary.wrap(function DsaWarningsCollection(
     });
 
     const isExpanded = expandedUserId === user.id;
-    const isLightTheme = hasLightProfileTheme(displayProfile);
     const isReady = result?.kind === "ready";
     const isUnavailable = result?.kind === "unavailable";
     const isError = result?.kind === "error";
@@ -275,27 +231,21 @@ const DsaWarningsCollection = ErrorBoundary.wrap(function DsaWarningsCollection(
         setRefreshKey(current => current + 1);
     };
     const openCaptchaWindow = async () => {
-        if (Native.openCaptchaWindow) {
-            await Native.openCaptchaWindow(user.id);
-            retryFetch();
-            return;
-        }
-
-        VencordNative.native.openExternal(buildDsaBrowseUrl(user.id));
+        await openLookupWindow(user.id);
         retryFetch();
     };
     const visibleActions = isReady && isExpanded ? actions : isReady ? actions.slice(0, MAX_VISIBLE_CARDS) : [];
     const visibleBreaches = isExpanded ? breaches : breaches.slice(0, MAX_VISIBLE_CARDS);
 
     const content = (
-        <section className={classes(cl("section"), isLightTheme && cl("light"))}>
+        <section className={classes(cl("section"))}>
             <div className={cl("header")}>
                 <div className={cl("header-main")}>
-                    <BaseText className={cl("title")} size="md" weight="bold" defaultColor={false}>Active DSA Warnings</BaseText>
-                    <BaseText className={cl("count")} size="xs" weight="semibold" defaultColor={false}>{subtitle}</BaseText>
+                    <BaseText className={cl("title")} size="md" weight="bold" defaultColor>Active DSA Warnings</BaseText>
+                    <BaseText className={cl("count")} size="xs" weight="semibold" defaultColor>{subtitle}</BaseText>
                 </div>
                 <Clickable className={cl("open")} onClick={() => VencordNative.native.openExternal(buildDsaBrowseUrl(user.id))} aria-label="Open DSA lookup">
-                    <BaseText tag="span" size="xs" weight="bold" defaultColor={false}>Open DSA Lookup</BaseText>
+                    <BaseText className={cl("open")} tag="span" size="xs" weight="bold" defaultColor>Open DSA Lookup</BaseText>
                 </Clickable>
             </div>
 

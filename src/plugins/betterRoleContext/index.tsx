@@ -15,13 +15,28 @@ import { classes } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import { Guild, Role } from "@vencord/discord-types";
 import { findByCodeLazy, findByPropsLazy, findCssClassesLazy } from "@webpack";
-import { ContextMenuApi, GuildRoleStore, Menu, PermissionStore, Popout, RoleMemberPopout, useRef } from "@webpack/common";
+import { ContextMenuApi, GuildRoleStore, Menu, PermissionStore, Popout, RoleMemberPopout } from "@webpack/common";
 
 const GuildSettingsActions = findByPropsLazy("open", "selectRole", "updateGuild");
 const MenuItemClasses = findCssClassesLazy("item", "labelContainer", "colorDefault", "label", "iconContainer");
 const loadRoleMembers = findByCodeLazy(".GUILD_ROLE_MEMBER_IDS(", "requestMembersById");
 
 const DeveloperMode = getUserSettingLazy("appearance", "developerMode")!;
+
+let permCache: { guildId: string; at: number; canManageRoles: boolean; } | null = null;
+
+function canManageRoles(guild: Guild): boolean {
+    // getGuildPermissionProps recomputes from member + roles on every call, and
+    // this runs on every role menu open. Cache it: moderators open role menus
+    // minutes apart, so a short cache never hits while a longer one covers a
+    // whole moderation session. Staleness only affects whether the Edit Role
+    // item shows — Discord itself enforces the permission when it runs.
+    const now = Date.now();
+    if (permCache && permCache.guildId === guild.id && now - permCache.at < 60_000) return permCache.canManageRoles;
+    const can = PermissionStore.getGuildPermissionProps(guild).canManageRoles;
+    permCache = { guildId: guild.id, at: now, canManageRoles: can };
+    return can;
+}
 
 async function openRoleIconModal(roleId: string, roleIcon: string, roleName: string) {
     const format = settings.store.roleIconFileFormat;
@@ -91,8 +106,13 @@ const settings = definePluginSettings({
 export function buildExtraRoleContextMenuItems(role: Role, guild: Guild, popoutRef?: React.RefObject<any>) {
     if (!role) return { before: [], after: [] };
 
+    // Resolved once here instead of non-null asserting inside render: without a
+    // current channel (DMs, load edge cases) the old getCurrentChannel()! threw
+    // inside the menu render on every open.
+    const channelId = getCurrentChannel()?.id;
+
     const before = [
-        PermissionStore.getGuildPermissionProps(guild).canManageRoles && (
+        canManageRoles(guild) && (
             <Menu.MenuItem
                 key="vc-edit-role"
                 id="vc-edit-role"
@@ -102,6 +122,7 @@ export function buildExtraRoleContextMenuItems(role: Role, guild: Guild, popoutR
                     GuildSettingsActions.selectRole(role.id);
                 }}
                 icon={PencilIcon}
+                leadingAccessory={{ type: "icon", icon: PencilIcon }}
             />
         ),
         role.colorString && (
@@ -111,6 +132,7 @@ export function buildExtraRoleContextMenuItems(role: Role, guild: Guild, popoutR
                 label="Copy Role Color"
                 action={() => copyToClipboard(role.colorString!)}
                 icon={AppearanceIcon}
+                leadingAccessory={{ type: "icon", icon: AppearanceIcon }}
             />
         )
     ].filter(isTruthy);
@@ -129,9 +151,10 @@ export function buildExtraRoleContextMenuItems(role: Role, guild: Guild, popoutR
                     });
                 }}
                 icon={ImageIcon}
+                leadingAccessory={{ type: "icon", icon: ImageIcon }}
             />
         ),
-        popoutRef && (
+        popoutRef && channelId && (
             <Menu.MenuItem
                 key="vc-view-role-members"
                 id="vc-view-role-members"
@@ -146,7 +169,7 @@ export function buildExtraRoleContextMenuItems(role: Role, guild: Guild, popoutR
                             <RoleMemberPopout
                                 popoutProps={popoutProps}
                                 guildId={guild.id}
-                                channelId={getCurrentChannel()!.id}
+                                channelId={channelId}
                                 roleId={role.id}
                             />
                         )}
@@ -159,6 +182,7 @@ export function buildExtraRoleContextMenuItems(role: Role, guild: Guild, popoutR
                                 {...popoutProps}
                             >
                                 <div className={MenuItemClasses.label}>View Role Members</div>
+                                {/* FIXME: update to new icon style */}
                                 <div className={MenuItemClasses.iconContainer}>
                                     <RoleMembersIcon />
                                 </div>
@@ -181,7 +205,9 @@ export function openRoleContextMenu(event: React.MouseEvent<HTMLElement>, { guil
     if (!role) return;
 
     ContextMenuApi.openContextMenu(event, () => {
-        const popoutRef = useRef(null);
+        // Plain ref object, not useRef: this callback is not a component render,
+        // so calling the hook here broke the Rules of Hooks on every menu open.
+        const popoutRef: { current: null; } = { current: null };
         const { before, after } = buildExtraRoleContextMenuItems(role, guild, popoutRef);
 
         return (
@@ -197,6 +223,7 @@ export function openRoleContextMenu(event: React.MouseEvent<HTMLElement>, { guil
                     id="vc-better-role-context-copy-role-id"
                     label={getIntlMessage("COPY_ID_ROLE")}
                     icon={CopyIdIcon}
+                    leadingAccessory={{ type: "icon", icon: CopyIdIcon }}
                     action={() => copyToClipboard(role.id)}
                 />
             </Menu.Menu>
@@ -213,20 +240,36 @@ export default definePlugin({
     settings,
     openRoleContextMenu,
     patches: [
-        // Conflicts with RoleColorEverywhere which changes the code at the end of our match. (and also uses same find & similar match)
-        // However, BetterRoleContext applies first (alphabetic order), so it's not an issue
         {
             find: 'tutorialId:"whos-online',
             replacement: {
-                match: /(?<=#{intl::CHANNEL_MEMBERS_A11Y_LABEL}.{0,200}?"aria-hidden":!0,)children:.{0,200}?(?:—|\\u2014) ",\i\]\}\)\]/,
+                match: /(?<=#{intl::CHANNEL_MEMBERS_A11Y_LABEL}.{0,400}?)children:(?=.{0,20}?(?:—|\\u2014) ",\i\])/,
                 replace: "onContextMenu:e=>$self.openRoleContextMenu(e,arguments[0]),$&"
+            }
+        },
+        // member list role headers
+        {
+            find: "?null:new Intl.NumberFormat",
+            replacement: {
+                match: /(?<=#{intl::CHANNEL_MEMBERS_A11Y_LABEL},\{title:\i,count:\i\}\)\}\),\(0,\i\.jsxs\)\("div",\{)/,
+                replace: "onContextMenu:e=>$self.openRoleContextMenu(e,arguments[0]),"
             }
         }
     ],
 
     start() {
-        // DeveloperMode needs to be enabled for the context menu to be shown
-        DeveloperMode.updateSetting(true);
+        // DeveloperMode needs to be enabled for the context menu to be shown.
+        // Deferred past startup: the settings write fans out to every settings
+        // subscriber, which measured as a start-time spike. Dev menus only open
+        // on user action, long after this has run.
+        const enable = () => {
+            try {
+                if (!DeveloperMode.getSetting()) DeveloperMode.updateSetting(true);
+            } catch { /* settings not ready; role dev items simply stay hidden */ }
+        };
+        const ric = (window as any).requestIdleCallback as ((cb: () => void, opts?: { timeout: number; }) => void) | undefined;
+        if (typeof ric === "function") ric(enable, { timeout: 2000 });
+        else setTimeout(enable, 500);
     },
 
     contextMenus: {
@@ -244,11 +287,12 @@ export default definePlugin({
                         label="Copy Role Color"
                         action={() => copyToClipboard(role.colorString!)}
                         icon={AppearanceIcon}
+                        leadingAccessory={{ type: "icon", icon: AppearanceIcon }}
                     />
                 );
             }
 
-            if (PermissionStore.getGuildPermissionProps(guild).canManageRoles) {
+            if (canManageRoles(guild)) {
                 children.unshift(
                     <Menu.MenuItem
                         id="vc-edit-role"
@@ -258,6 +302,7 @@ export default definePlugin({
                             GuildSettingsActions.selectRole(id);
                         }}
                         icon={PencilIcon}
+                        leadingAccessory={{ type: "icon", icon: PencilIcon }}
                     />
                 );
             }
@@ -270,6 +315,7 @@ export default definePlugin({
                         label="View Role Icon"
                         action={() => openRoleIconModal(role.id, roleIcon, role.name)}
                         icon={ImageIcon}
+                        leadingAccessory={{ type: "icon", icon: ImageIcon }}
                     />
 
                 );

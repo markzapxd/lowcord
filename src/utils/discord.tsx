@@ -17,8 +17,8 @@
 */
 
 import type { MessageObject } from "@api/MessageEvents";
-import type { Channel, CloudUpload, Guild, GuildFeatures, MediaModalItem, MediaModalProps, Message, User } from "@vencord/discord-types";
-import { ChannelActionCreators, ChannelStore, ComponentDispatch, Constants, FluxDispatcher, GuildStore, i18n, InviteActions, MessageActions, openMediaModal, RestAPI, SelectedChannelStore, SelectedGuildStore, Toasts, UserProfileActions, UserProfileStore, UserSettingsActionCreators, UserUtils } from "@webpack/common";
+import type { BasicGuild, Channel, CloudUpload, Guild, GuildFeatures, GuildProfile, MediaModalItem, MediaModalProps, Message, User } from "@vencord/discord-types";
+import { ChannelActionCreators, ChannelStore, ComponentDispatch, Constants, FluxDispatcher, GuildStore, i18n, InviteActions, MessageActions, openMediaModal, openUserProfileModal, RestAPI, SelectedChannelStore, SelectedGuildStore, Toasts, UserProfileStore, UserSettingsActionCreators, UserUtils } from "@webpack/common";
 import { Except } from "type-fest";
 
 import { copyToClipboard } from "./clipboard";
@@ -26,6 +26,7 @@ import { runtimeHashMessageKey } from "./intlHash";
 import { Logger } from "./Logger";
 
 const IntlManagerLogger = new Logger("IntlManager");
+const logger = new Logger("Discord");
 
 /**
  * Get an internationalized message from a non hashed key
@@ -115,7 +116,20 @@ export function insertTextIntoChatInputBox(text: string) {
 }
 
 export async function copyWithToast(text: string, toastMessage = "Copied to clipboard!") {
-    await copyToClipboard(text);
+    try {
+        await copyToClipboard(text);
+    } catch (e) {
+        // Most callers fire this off with `void copyWithToast(...)`, so a rejection here
+        // used to surface as an unhandled rejection and the button simply did nothing.
+        logger.error("Failed to copy to the clipboard", e);
+        Toasts.show({
+            message: "Could not copy to the clipboard.",
+            id: Toasts.genId(),
+            type: Toasts.Type.FAILURE
+        });
+        return;
+    }
+
     Toasts.show({
         message: toastMessage,
         id: Toasts.genId(),
@@ -182,14 +196,14 @@ export async function openUserProfile(id: string) {
     if (!user) throw new Error("No such user: " + id);
 
     const guildId = SelectedGuildStore.getGuildId();
-    UserProfileActions.openUserProfileModal({
+    openUserProfileModal({
         userId: id,
         guildId,
         channelId: SelectedChannelStore.getChannelId(),
-        analyticsLocation: {
-            page: guildId ? "Guild Channel" : "DM Channel",
-            section: "Profile Popout"
-        }
+        sourceAnalyticsLocations: [
+            "username",
+            "user profile popout",
+        ]
     });
 }
 
@@ -210,22 +224,29 @@ export async function fetchUserProfile(id: string, options?: FetchUserProfileOpt
 
     FluxDispatcher.dispatch({ type: "USER_PROFILE_FETCH_START", userId: id });
 
-    const { body } = await RestAPI.get({
-        url: Constants.Endpoints.USER_PROFILE(id),
-        query: {
-            with_mutual_guilds: false,
-            with_mutual_friends_count: false,
-            ...options
-        },
-        oldFormErrors: true,
-    });
+    try {
+        const { body } = await RestAPI.get({
+            url: Constants.Endpoints.USER_PROFILE(id),
+            query: {
+                with_mutual_guilds: false,
+                with_mutual_friends_count: false,
+                ...options
+            },
+            oldFormErrors: true,
+        });
 
-    FluxDispatcher.dispatch({ type: "USER_UPDATE", user: body.user });
-    await FluxDispatcher.dispatch({ type: "USER_PROFILE_FETCH_SUCCESS", userProfile: body });
-    if (options?.guild_id && body.guild_member)
-        FluxDispatcher.dispatch({ type: "GUILD_MEMBER_PROFILE_UPDATE", guildId: options.guild_id, guildMember: body.guild_member });
+        FluxDispatcher.dispatch({ type: "USER_UPDATE", user: body.user });
+        await FluxDispatcher.dispatch({ type: "USER_PROFILE_FETCH_SUCCESS", userProfile: body });
+        if (options?.guild_id && body.guild_member)
+            FluxDispatcher.dispatch({ type: "GUILD_MEMBER_PROFILE_UPDATE", guildId: options.guild_id, guildMember: body.guild_member });
 
-    return UserProfileStore.getUserProfile(id);
+        return UserProfileStore.getUserProfile(id);
+    } catch (e) {
+        // mirror Discord's own failure handling so the store/UI state stays
+        // consistent instead of being stuck in a "fetching" state forever
+        FluxDispatcher.dispatch({ type: "USER_PROFILE_FETCH_FAILURE", userId: id });
+        throw e;
+    }
 }
 
 /**
@@ -236,7 +257,7 @@ export function getUniqueUsername(user: User) {
 }
 
 // Discord has a similar function in their code
-export function getGuildAcronym(guild: Guild): string {
+export function getGuildAcronym(guild: Guild | BasicGuild | GuildProfile): string {
     return guild.name
         .replaceAll("'s ", " ")
         .replace(/\w+/g, m => m[0])

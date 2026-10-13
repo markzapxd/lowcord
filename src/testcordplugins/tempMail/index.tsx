@@ -5,10 +5,38 @@
  */
 
 import { HeaderBarButton } from "@api/HeaderBar";
-import definePlugin from "@utils/types";
+import { definePluginSettings } from "@api/Settings";
+import { TestcordDevs } from "@utils/constants";
+import definePlugin, { OptionType } from "@utils/types";
 import { openModal, React } from "@webpack/common";
 
 import { TempMailModal } from "./components/TempMailModal";
+import { providers } from "./providers";
+
+export const settings = definePluginSettings({
+    defaultProvider: {
+        type: OptionType.SELECT,
+        description: "Default provider for new addresses.",
+        options: providers.map(p => ({ label: `${p.name} — ${p.description}`, value: p.id, default: p.id === "mail.tm" })),
+    },
+    autoRefreshSeconds: {
+        type: OptionType.SLIDER,
+        description: "Auto-refresh inbox interval (seconds).",
+        markers: [0, 10, 15, 30, 60],
+        default: 15,
+        stickToMarkers: false,
+    },
+    showHtmlPreview: {
+        type: OptionType.BOOLEAN,
+        description: "Render HTML preview for messages when available.",
+        default: true,
+    },
+    confirmDelete: {
+        type: OptionType.BOOLEAN,
+        description: "Confirm before deleting accounts.",
+        default: true,
+    },
+});
 
 function MailIcon(props: React.SVGProps<SVGSVGElement>) {
     return (
@@ -29,11 +57,19 @@ function TempMailButton() {
 }
 
 export default definePlugin({
+    id: "tempMail",
     name: "TempMail",
-    description: "Disposable email addresses powered by mail.tm — create, receive and save emails inside Discord",
+    description: "Email client inside Discord.",
     tags: ["Utility", "Privacy"],
-    authors: [{ name: "lastclipped", id: 0n }],
+    authors: [TestcordDevs.sirphantom89],
     dependencies: ["HeaderBarAPI"],
+    settings,
+
+    toolboxActions: {
+        "Open Temp Mail"() {
+            openModal(props => <TempMailModal modalProps={props} />);
+        }
+    },
 
     headerBarButton: {
         icon: MailIcon,

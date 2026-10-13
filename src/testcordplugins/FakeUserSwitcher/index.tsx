@@ -203,10 +203,23 @@ function buildOverrides(active: any): Record<string, unknown> {
             return 2;
         })();
         if (target.accentColor != null) ov.accentColor = target.accentColor;
+        ov.verified = true;
+        ov.isClaimed = () => true;
+        ov.isUnclaimed = () => false;
+        ov.hasVerifiedEmailOrPhone = () => true;
         return ov;
     }
 
     const banner = target.banner ?? profile?.banner ?? null;
+    const realUser = getRealCurrentUser();
+    const effectiveEmail = (isManual && manualData?.manualEmail && manualData.manualEmail.trim() !== "")
+        ? manualData.manualEmail.trim()
+        : (settings.store.manualEmail && settings.store.manualEmail.trim() !== "")
+            ? settings.store.manualEmail.trim()
+            : (realUser?.email && typeof realUser.email === "string" && realUser.email.trim() !== "")
+                ? realUser.email.trim()
+                : "user@discord.com";
+
     const overrides: Record<string, unknown> = {
         username: target.username,
         globalName: target.globalName ?? target.global_name ?? target.username,
@@ -236,6 +249,11 @@ function buildOverrides(active: any): Record<string, unknown> {
         accentColor: target.accentColor ?? profile?.accentColor ?? null,
         usernameNormalized: typeof target.username === "string" ? target.username.toLowerCase() : undefined,
         bot: target.bot ?? false,
+        email: effectiveEmail,
+        verified: true,
+        isClaimed: () => true,
+        isUnclaimed: () => false,
+        hasVerifiedEmailOrPhone: () => true,
     };
     if (target.primaryGuild !== undefined) overrides.primaryGuild = target.primaryGuild;
     if (target.avatarDecorationData !== undefined) overrides.avatarDecorationData = target.avatarDecorationData;
@@ -294,63 +312,167 @@ function buildOverrides(active: any): Record<string, unknown> {
     } else {
         // Do NOT override id to target.id — this breaks Discord's
         // UserProfileInteractionContextProvider and hides the "Edit Profile" button.
-        // The createdAt is set from the target's snowflake for display purposes only.
         overrides.createdAt = target.createdAt ?? getCreatedAtFromId(target.id);
     }
     return overrides;
 }
 
-function mergeUser(base: any, overrides: Record<string, unknown>): any {
-    const wrap = Object.create(Object.getPrototypeOf(base));
-    for (const key of Object.getOwnPropertyNames(base)) {
-        const desc = Object.getOwnPropertyDescriptor(base, key);
-        if (desc) {
-            try {
-                Object.defineProperty(wrap, key, desc);
-            } catch { /* ignore */ }
-        }
-    }
-    for (const sym of Object.getOwnPropertySymbols(base)) {
-        const desc = Object.getOwnPropertyDescriptor(base, sym);
-        if (desc) {
-            try {
-                Object.defineProperty(wrap, sym, desc);
-            } catch { /* ignore */ }
-        }
-    }
-    for (const key of Object.keys(overrides)) {
+function safeMergeUserProfile(original: any, overrides: any, userId?: string): any {
+    if (!original) return { userId, ...overrides };
+
+    let proto = Object.prototype;
+    try {
+        proto = Object.getPrototypeOf(original) || Object.prototype;
+    } catch { /* ignore */ }
+
+    const merged = Object.create(proto);
+
+    try {
+        Object.assign(merged, original);
+    } catch {
+        let keys: (string | symbol)[] = [];
         try {
-            Object.defineProperty(wrap, key, {
-                value: overrides[key],
-                writable: true,
-                enumerable: true,
-                configurable: true,
-            });
+            keys = [
+                ...Object.getOwnPropertyNames(original),
+                ...Object.getOwnPropertySymbols(original)
+            ];
+        } catch {
+            try {
+                keys = Object.keys(original);
+            } catch { /* ignore */ }
+        }
+        const uniqueKeys = Array.from(new Set(keys));
+        for (const key of uniqueKeys) {
+            try {
+                const desc = Object.getOwnPropertyDescriptor(original, key);
+                if (desc) {
+                    Object.defineProperty(merged, key, desc);
+                } else {
+                    merged[key as any] = original[key];
+                }
+            } catch {
+                try {
+                    merged[key as any] = original[key];
+                } catch { /* ignore */ }
+            }
+        }
+    }
+
+    if (overrides) {
+        for (const key of Object.keys(overrides)) {
+            try {
+                merged[key] = overrides[key];
+            } catch { /* ignore */ }
+        }
+    }
+
+    return merged;
+}
+
+function mergeUser(base: any, overrides: Record<string, unknown>): any {
+    if (!base) return overrides;
+    let proto = Object.prototype;
+    try {
+        proto = Object.getPrototypeOf(base) || Object.prototype;
+    } catch { /* ignore */ }
+    const wrap = Object.create(proto);
+
+    let names: string[] = [];
+    try {
+        names = Array.from(new Set(Object.getOwnPropertyNames(base)));
+    } catch {
+        try {
+            names = Object.keys(base);
         } catch { /* ignore */ }
+    }
+    for (const key of names) {
+        try {
+            const desc = Object.getOwnPropertyDescriptor(base, key);
+            if (desc) {
+                Object.defineProperty(wrap, key, desc);
+            }
+        } catch { /* ignore */ }
+    }
+
+    let symbols: symbol[] = [];
+    try {
+        symbols = Array.from(new Set(Object.getOwnPropertySymbols(base)));
+    } catch { /* ignore */ }
+    for (const sym of symbols) {
+        try {
+            const desc = Object.getOwnPropertyDescriptor(base, sym);
+            if (desc) {
+                Object.defineProperty(wrap, sym, desc);
+            }
+        } catch { /* ignore */ }
+    }
+
+    if (overrides) {
+        for (const key of Object.keys(overrides)) {
+            try {
+                Object.defineProperty(wrap, key, {
+                    value: overrides[key],
+                    writable: true,
+                    enumerable: true,
+                    configurable: true,
+                });
+            } catch { /* ignore */ }
+        }
     }
     return wrap;
 }
 
 let wrappedUsers = new WeakMap<any, any>();
 
+// Own-property shadows of the User prototype methods. Without these, an
+// unclaimed account keeps reporting isUnclaimed() and Discord blocks chat
+// and paints the "Unclaimed" badge. Applied whenever we touch the current
+// user, spoof active or not.
+const CLAIM_OVERRIDES = {
+    verified: true,
+    isClaimed: () => true,
+    isUnclaimed: () => false,
+    hasVerifiedEmailOrPhone: () => true,
+};
+
 function cloneWithPremium(user: any, months: number): any {
-    const clone = Object.create(Object.getPrototypeOf(user));
-    for (const key of Object.getOwnPropertyNames(user)) {
-        const desc = Object.getOwnPropertyDescriptor(user, key);
-        if (desc) {
-            try {
+    if (!user) return user;
+    let proto = Object.prototype;
+    try {
+        proto = Object.getPrototypeOf(user) || Object.prototype;
+    } catch { /* ignore */ }
+    const clone = Object.create(proto);
+
+    let names: string[] = [];
+    try {
+        names = Array.from(new Set(Object.getOwnPropertyNames(user)));
+    } catch {
+        try {
+            names = Object.keys(user);
+        } catch { /* ignore */ }
+    }
+    for (const key of names) {
+        try {
+            const desc = Object.getOwnPropertyDescriptor(user, key);
+            if (desc) {
                 Object.defineProperty(clone, key, desc);
-            } catch { /* ignore */ }
-        }
+            }
+        } catch { /* ignore */ }
     }
-    for (const sym of Object.getOwnPropertySymbols(user)) {
-        const desc = Object.getOwnPropertyDescriptor(user, sym);
-        if (desc) {
-            try {
+
+    let symbols: symbol[] = [];
+    try {
+        symbols = Array.from(new Set(Object.getOwnPropertySymbols(user)));
+    } catch { /* ignore */ }
+    for (const sym of symbols) {
+        try {
+            const desc = Object.getOwnPropertyDescriptor(user, sym);
+            if (desc) {
                 Object.defineProperty(clone, sym, desc);
-            } catch { /* ignore */ }
-        }
+            }
+        } catch { /* ignore */ }
     }
+
     const since = new Date();
     since.setMonth(since.getMonth() - months);
     try {
@@ -378,10 +500,15 @@ function wrapUser(base: any): any {
     if (!base) return base;
 
     if (!active || !isActive()) {
-        if (settings.store.fakeNitroMonths && settings.store.fakeNitroMonths > 0 && isCurrentUser(base.id)) {
+        if (isCurrentUser(base.id)) {
+            const unclaimed = base.isUnclaimed?.();
+            const needPremium = settings.store.fakeNitroMonths && settings.store.fakeNitroMonths > 0;
+            if (!unclaimed && !needPremium) return base;
             let wrapped = wrappedUsers.get(base);
             if (!wrapped) {
-                wrapped = cloneWithPremium(base, settings.store.fakeNitroMonths);
+                wrapped = base;
+                if (unclaimed) wrapped = mergeUser(wrapped, CLAIM_OVERRIDES);
+                if (needPremium) wrapped = cloneWithPremium(wrapped, settings.store.fakeNitroMonths);
                 wrappedUsers.set(base, wrapped);
             }
             return wrapped;
@@ -450,7 +577,6 @@ let memberPatched = false;
 let apiPatched = false;
 
 const SWITCHER_DROPDOWN_SELECTORS = [
-    "[class*='accountProfileCard']",
     "[class*='accountOption']",
     "[class*='accountSwitcher']",
     "[class*='multiAccount']"
@@ -461,9 +587,7 @@ let switcherDropdownObserver: ReturnType<typeof setInterval> | null = null;
 let switcherDropdownCheckQueued = false;
 let accountSwitcherRenderUntil = 0;
 
-// One comma-joined query instead of four separate document walks. These are substring
-// class matches, which skip the browser's fast selector path, so each one is a full
-// traversal — running four of them twice a second was pure overhead.
+// One comma-joined query instead of separate document walks.
 const SWITCHER_DROPDOWN_SELECTOR = SWITCHER_DROPDOWN_SELECTORS.join(", ");
 
 function readSwitcherDropdownOpen(): boolean {
@@ -491,7 +615,7 @@ function startSwitcherDropdownObserver() {
             switcherDropdownCheckQueued = false;
             switcherDropdownOpen = readSwitcherDropdownOpen();
         });
-    }, 500);
+    }, 1000);
 }
 
 function stopSwitcherDropdownObserver() {
@@ -506,15 +630,6 @@ function markAccountSwitcherRendering() {
 }
 
 function isAccountSwitcherCall(): boolean {
-    // switcherDropdownOpen is updated async (rAF-coalesced), so for up to a frame
-    // after the dropdown opens it's still false — during which getCurrentUser/getUser
-    // would hand the switcher a wrapped (fake) user and Discord renders the row as an
-    // "Unclaimed Account". The render window stamped synchronously by injectFakes
-    // (getUsers is the earliest reliable signal the switcher is rendering) closes that
-    // gap. Do NOT do a synchronous DOM querySelector here: this runs inside the patched
-    // getCurrentUser/getUser on every call, and the hover tooltip's layer matches the
-    // broad switcher selectors → flips the result mid-render → re-entrant render loop
-    // that freezes Discord on hover.
     return switcherDropdownOpen || (accountSwitcherRenderUntil > 0 && Date.now() < accountSwitcherRenderUntil);
 }
 
@@ -532,7 +647,7 @@ function patchStore() {
     try { _setOriginalGetCurrentUser(originalGetCurrentUser); } catch { /* ignore */ }
 
     UserStore.getUser = function (userId: string) {
-        if (isGettingUsers || isAccountSwitcherCall()) {
+        if (isGettingUsers || (settings.store.patchInternalAccountSwitcher && isAccountSwitcherCall())) {
             return originalGetUser!.call(this, userId);
         }
         if (isActive()) {
@@ -554,12 +669,7 @@ function patchStore() {
             }
         }
         const u = originalGetUser!.call(this, userId);
-        if (!isActive()) {
-            if (u && isCurrentUser(userId) && settings.store.fakeNitroMonths && settings.store.fakeNitroMonths > 0) {
-                return wrapUser(u);
-            }
-            return u;
-        }
+        if (!isActive()) return u;
         if (!u) return u;
         if (!isCurrentUser(userId)) return u;
         return wrapUser(u);
@@ -567,18 +677,10 @@ function patchStore() {
 
     UserStore.getCurrentUser = function () {
         const u = originalGetCurrentUser!.call(this);
-        if (isGettingUsers || isAccountSwitcherCall()) {
+        if (isGettingUsers || (settings.store.patchInternalAccountSwitcher && isAccountSwitcherCall())) {
             return u;
         }
-        if (!isActive()) {
-            if (u && settings.store.fakeNitroMonths && settings.store.fakeNitroMonths > 0) {
-                return wrapUser(u);
-            }
-            return u;
-        }
-        if (settings.store.patchInternalAccountSwitcher && isAccountSwitcherCall()) {
-            return u;
-        }
+        if (!isActive()) return u;
         return wrapUser(u);
     };
 
@@ -1279,11 +1381,44 @@ function syncSpoofState() {
 }
 
 function FakeUserSwitcherIcon({ className, style }: { className?: string; style?: React.CSSProperties; }) {
-    const active = isActive();
+    const activeTarget = getActiveTargetForGuild(undefined);
+    const active = !!activeTarget;
+    const lineLength = 30;
+    const lineStyle: React.CSSProperties = {
+        strokeDasharray: lineLength,
+        strokeDashoffset: !active ? lineLength : 0,
+        transition: "stroke-dashoffset 0.1s ease-in-out",
+    };
+
     return (
         <svg className={className} style={style} width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <path fill={active ? "var(--status-danger)" : "currentColor"} d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2a7.2 7.2 0 0 1-6-3.22c.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08a7.2 7.2 0 0 1-6 3.22z" />
-            {active && <path fill="var(--status-danger)" d="M22.7 2.7a1 1 0 0 0-1.4-1.4l-20 20a1 1 0 1 0 1.4 1.4Z" />}
+            <mask id="FakeUserSwitcherLine">
+                <rect width="100%" height="100%" fill="#ffffff" />
+                <line
+                    className="blackLine"
+                    x1="22"
+                    y1="2"
+                    x2="2"
+                    y2="22"
+                    stroke="#000000"
+                    strokeWidth="6"
+                    strokeLinecap="round"
+                    style={lineStyle}
+                />
+            </mask>
+
+            <path mask="url(#FakeUserSwitcherLine)" fill={!active ? "var(--status-danger)" : "currentColor"} d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2a7.2 7.2 0 0 1-6-3.22c.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08a7.2 7.2 0 0 1-6 3.22z" />
+
+            <line
+                x1="22"
+                y1="2"
+                x2="2"
+                y2="22"
+                stroke="var(--status-danger, currentColor)"
+                strokeWidth="2"
+                strokeLinecap="round"
+                style={lineStyle}
+            />
         </svg>
     );
 }
@@ -1573,6 +1708,7 @@ function buildSwitcherUser(user: any, extra?: Record<string, unknown>) {
         getAvatarURL: (_guildId?: string, size?: number) => getAvatarUrlForSwitcher(user, size) ?? undefined,
         tokenStatus: user?.tokenStatus ?? 1,
         pushSyncToken: user?.pushSyncToken ?? null,
+        ...CLAIM_OVERRIDES,
     };
 }
 
@@ -1901,7 +2037,7 @@ function getFakeConnections(): any[] {
 let unsub: (() => void) | null = null;
 
 const plugin = definePlugin({
-    name: "fakeuserswitcher",
+    name: "FakeUserSwitcher",
     description: "Visually impersonate any Discord user client-side. Advanced status, activities, bio, and visual spoofing.",
     tags: ["Customisation", "Privacy", "Fun"],
     authors: [TestcordDevs.x2b, TestcordDevs.SirPhantom89],
@@ -2005,7 +2141,7 @@ const plugin = definePlugin({
     flux: {
         CONNECTION_OPEN() {
             if (settings.store.spoofActive && (settings.store.manualMode || getCachedTarget())) {
-                syncSpoofState();
+                queueMicrotask(() => syncSpoofState());
             }
         },
         MULTI_ACCOUNT_SWITCH_ATTEMPT(action: any) {
@@ -2043,11 +2179,11 @@ const plugin = definePlugin({
             group: true,
             replacement: [
                 {
-                    match: /(?<=\.avatarDecoration,guildId:\i\}\)\),)(?<=user:(\i).{0,150}?)/,
+                    match: /(?<=\.avatarDecoration,guildId:\i\}\)\),)(?<=user:(\i).+?)/,
                     replace: "vcFusAvatarDecoration=$self.useUserAvatarDecoration($1),"
                 },
                 {
-                    match: /(?<={avatarDecoration:).{1,20}?(?=,)(?<=avatarDecorationOverride:(\i).{0,150}?)/,
+                    match: /(?<={avatarDecoration:).{1,20}?(?=,)(?<=avatarDecorationOverride:(\i).+?)/,
                     replace: "$1??vcFusAvatarDecoration??($&)"
                 },
                 {
@@ -2061,7 +2197,8 @@ const plugin = definePlugin({
             replacement: [
                 {
                     match: /(?<=\i\)\({avatarDecoration:)\i(?=,)(?<=currentUser:(\i).{0,150}?)/,
-                    replace: "$self.useUserAvatarDecoration($1)??$&"
+                    replace: "$self.useUserAvatarDecoration($1)??$&",
+                    noWarn: true
                 }
             ]
         },
@@ -2074,7 +2211,8 @@ const plugin = definePlugin({
             replacement: [
                 {
                     match: /(\i)\.length>0\?void 0:(\i)\.avatarDecoration/,
-                    replace: "$self.useUserAvatarDecoration($2)??$2.avatarDecoration"
+                    replace: "$self.useUserAvatarDecoration($2)??$2.avatarDecoration",
+                    noWarn: true
                 }
             ]
         })),
@@ -2102,8 +2240,8 @@ const plugin = definePlugin({
         {
             find: "getAssetImage: size must === [",
             replacement: {
-                match: /(getAssetImage)\s*(=|:)?\s*(function)?\s*\(\s*(\i)\s*,\s*(\i)\s*(,[^)]*)?\)\s*\{/,
-                replace: "$1$2$3($4,$5$6){if(typeof $5===\"string\"&&($5.startsWith(\"http://\")||$5.startsWith(\"https://\")||$5.startsWith(\"data:\")))return $5;"
+                match: /(?:getAssetImage\s*[:=]\s*function|function\s+[A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*(,[^)]*)?\)\s*\{/,
+                replace: "$&if(typeof $2===\"string\"&&($2.startsWith(\"http://\")||$2.startsWith(\"https://\")||$2.startsWith(\"data:\")))return $2;"
             }
         },
         {
@@ -2167,7 +2305,8 @@ const plugin = definePlugin({
             find: "multiAccountUsers",
             replacement: {
                 match: /(\w+)\.default\.track\((\w+)\.HAw\.MULTI_ACCOUNT_SWITCH_ATTEMPT[^)]+\),(\w+)\.Mx\((\w+)\)/,
-                replace: "$1.default.track($2.HAw.MULTI_ACCOUNT_SWITCH_ATTEMPT,{location:{section:$2.JJy.USER_PROFILE}}),$self.handleSwitch($3.Mx.bind($3),$4)"
+                replace: "$1.default.track($2.HAw.MULTI_ACCOUNT_SWITCH_ATTEMPT,{location:{section:$2.JJy.USER_PROFILE}}),$self.handleSwitch($3.Mx.bind($3),$4)",
+                noWarn: true
             }
         }
     ],
@@ -2205,7 +2344,8 @@ const plugin = definePlugin({
             // Target IDs and manual synthetic IDs already encode their correct dates,
             // and checking isCurrentUser on every snowflake creates high CPU overhead.
             if (userId !== getOriginalMeId()) return undefined;
-            return getSpoofedCreatedAtMs() ?? undefined;
+            const ms = getSpoofedCreatedAtMs();
+            return (ms != null && Number.isFinite(ms) && !isNaN(ms)) ? ms : undefined;
         } catch {
             return undefined;
         }
@@ -2411,11 +2551,14 @@ const plugin = definePlugin({
                 overrides.primaryGuild = null;
                 overrides.primary_guild = null;
             }
-            if (settings.store.fakeNitroMonths && settings.store.fakeNitroMonths > 0) {
+            const fakeMonths = Number(settings.store.fakeNitroMonths);
+            if (Number.isFinite(fakeMonths) && fakeMonths > 0) {
                 const since = new Date();
-                since.setMonth(since.getMonth() - settings.store.fakeNitroMonths);
-                overrides.premiumType = 2;
-                overrides.premiumSince = since.toISOString();
+                since.setMonth(since.getMonth() - fakeMonths);
+                if (!isNaN(since.getTime())) {
+                    overrides.premiumType = 2;
+                    overrides.premiumSince = since.toISOString();
+                }
             }
             overrides.widgets = [];
             overrides.connectedAccounts = [];
@@ -2460,10 +2603,15 @@ const plugin = definePlugin({
         } else {
             // We are NOT actively spoofing (activeSpoof is false), but selfNitro is true.
             // We just override premiumType/premiumSince on our own profile.
+            const fakeMonths = Number(settings.store.fakeNitroMonths);
             const since = new Date();
-            since.setMonth(since.getMonth() - settings.store.fakeNitroMonths);
-            overrides.premiumType = 2;
-            overrides.premiumSince = since.toISOString();
+            if (Number.isFinite(fakeMonths) && fakeMonths > 0) {
+                since.setMonth(since.getMonth() - fakeMonths);
+            }
+            if (!isNaN(since.getTime())) {
+                overrides.premiumType = 2;
+                overrides.premiumSince = since.toISOString();
+            }
 
             if (original) {
                 if (original.bio != null) overrides.bio = original.bio;
@@ -2517,7 +2665,6 @@ const plugin = definePlugin({
             // tier (rendered by the dynamic profile badge) remains.
             const spoofingNitroTier = isManual && (manualData?.manualNitroLevel ?? -1) >= 0;
             const spoofingBoostTier = isManual && (manualData?.manualBoostMonths ?? -1) >= 0;
-            logger.info("[FUS-BADGE] profileHook badges — spoofNitro=", spoofingNitroTier, "spoofBoost=", spoofingBoostTier, "rawBadges=", JSON.stringify((Array.isArray(baseBadges) ? baseBadges : []).map((b: any) => ({ id: b?.id, desc: b?.description }))));
             if (Array.isArray(baseBadges) && (spoofingNitroTier || spoofingBoostTier)) {
                 baseBadges = baseBadges.filter((b: any) => {
                     const id = String(b?.id ?? "");
@@ -2526,8 +2673,8 @@ const plugin = definePlugin({
                         || id.startsWith("premium") || /\bnitro\b/i.test(desc) || /\bnitro\b/i.test(id);
                     const isNativeBoost = id.startsWith("guild_booster") || id === "premium_guild"
                         || id.startsWith("guild_boost") || /boosting|server boost/i.test(desc) || /boost/i.test(id);
-                    if (spoofingNitroTier && isNativeNitro) { logger.info("[FUS-BADGE] stripping native nitro:", id, desc); return false; }
-                    if (spoofingBoostTier && isNativeBoost) { logger.info("[FUS-BADGE] stripping native boost:", id, desc); return false; }
+                    if (spoofingNitroTier && isNativeNitro) return false;
+                    if (spoofingBoostTier && isNativeBoost) return false;
                     return true;
                 });
                 overrides.badges = baseBadges;
@@ -2597,9 +2744,7 @@ const plugin = definePlugin({
         };
         overrides.userProfile = overrides.user_profile;
 
-        const merged = original
-            ? Object.assign(Object.create(Object.getPrototypeOf(original)), original, overrides)
-            : { userId, ...overrides };
+        const merged = safeMergeUserProfile(original, overrides, userId);
         return merged;
     },
 

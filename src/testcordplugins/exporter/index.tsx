@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { ChatBarButton } from "@api/ChatButtons";
+import { ChatBarButton, ChatBarButtonFactory } from "@api/ChatButtons";
 import { addChannelToolbarButton, addHeaderBarButton, ChannelToolbarButton, HeaderBarButton, removeChannelToolbarButton, removeHeaderBarButton } from "@api/HeaderBar";
 import { TestcordRequestCoordinator } from "@api/index";
 import { definePluginSettings } from "@api/Settings";
@@ -12,11 +12,11 @@ import { FormSwitch } from "@components/FormSwitch";
 import { TestcordDevs } from "@utils/constants";
 import { getUniqueUsername } from "@utils/discord";
 import { sleep } from "@utils/misc";
-import { ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalRoot, openModal } from "@utils/modal";
+import { ModalContent, ModalFooter, openModal } from "@utils/modal";
 import definePlugin, { OptionType } from "@utils/types";
-import type { GuildMember, Message, User } from "@vencord/discord-types";
+import type { GuildMember, User } from "@vencord/discord-types";
 import { findStoreLazy } from "@webpack";
-import { Button, ChannelStore, ContextMenuApi, Forms, GuildMemberStore, GuildRoleStore, GuildStore, Menu, PresenceStore, React, ScrollerThin, SelectedChannelStore, SelectedGuildStore, Select, TabBar, Text, TextInput, Toasts, UserProfileStore, UserStore, useEffect, useRef, useState } from "@webpack/common";
+import { Button, ChannelStore, ContextMenuApi, Forms, GuildMemberStore, GuildRoleStore, GuildStore, Menu, MessageStore, Modal, PresenceStore, React, ScrollerThin, Select, SelectedChannelStore, SelectedGuildStore, TabBar, Text, TextInput, Toasts, useEffect, useRef, UserProfileStore, UserStore, useState } from "@webpack/common";
 
 const ChannelMemberStore = findStoreLazy("ChannelMemberStore") as {
     getProps(guildId?: string, channelId?: string): { groups: { count: number; id: string; }[]; };
@@ -73,6 +73,11 @@ export const settings = definePluginSettings({
     includeEmbeds: { type: OptionType.BOOLEAN, default: true, description: "Include link embeds." },
     includeReactions: { type: OptionType.BOOLEAN, default: true, description: "Include message reactions and stickers." },
     includeBots: { type: OptionType.BOOLEAN, default: true, description: "Include bot accounts in member list exports." },
+    loadedOnly: {
+        type: OptionType.BOOLEAN,
+        default: false,
+        description: "Export only messages already loaded in Discord instead of fetching the full history."
+    },
     location: {
         type: OptionType.SELECT,
         description: "Where to display the export action buttons.",
@@ -322,6 +327,50 @@ async function getDeletedMessagesFromIDB(channelId: string): Promise<any[]> {
     }
 }
 
+function fromCachedMessage(m: any, deleted: boolean): RichMessage {
+    const ref = m.messageReference ?? m.referenced_message;
+    return {
+        id: m.id,
+        timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : (m.timestamp || new Date().toISOString()),
+        editedAt: m.editedTimestamp instanceof Date ? m.editedTimestamp.toISOString() : (m.editedTimestamp || m.edited_timestamp),
+        authorId: m.author?.id ?? "0",
+        authorName: m.author?.globalName ?? m.author?.username ?? "Unknown",
+        authorGlobalName: m.author?.globalName ?? undefined,
+        authorAvatar: m.author?.avatar ?? null,
+        content: m.content ?? "",
+        attachments: (m.attachments ?? []).map((a: any) => ({
+            url: a.url ?? a.oldUrl ?? "", filename: a.filename ?? "file", size: a.size ?? 0,
+            contentType: a.content_type ?? "application/octet-stream",
+        })),
+        embeds: (m.embeds ?? []).map((e: any) => ({
+            title: e.title, description: e.description, url: e.url,
+            image: e.image?.url ?? e.thumbnail?.url, type: e.type ?? "rich",
+        })),
+        stickers: (m.sticker_items ?? m.stickerItems ?? m.stickers ?? []).map((s: any) => ({ name: s.name, id: s.id })),
+        reactions: (m.reactions ?? []).map((r: any) => ({ emoji: r.emoji?.name ?? r.emoji?.id, count: r.count })),
+        referencedMessage: ref ? {
+            id: ref.message_id ?? ref.id ?? "0",
+            authorName: ref.author?.username ?? "Unknown",
+            content: (ref.content ?? "").slice(0, 100),
+        } : undefined,
+        pinned: m.pinned ?? false,
+        type: m.type ?? 0,
+        components: m.components ?? [],
+        deleted,
+    };
+}
+
+function getLoadedRichMessages(channelId: string): RichMessage[] {
+    const cached = MessageStore.getMessages(channelId);
+    const raw = Array.isArray(cached) ? cached : (cached._array ?? Object.values(cached));
+    return raw
+        .filter(m => m && m.state === "SENT" && !m.deleted && !m.mlDeleted)
+        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+        .map(m => fromCachedMessage(m, false));
+}
+
+const MAX_PAGE_RETRIES = 3;
+
 async function fetchAllMessages(channelId: string, token: string, onProgress: (n: number) => void, signal?: AbortSignal): Promise<RichMessage[]> {
     const messageMap = new Map<string, RichMessage>();
     let beforeId: string | null = null;
@@ -336,10 +385,38 @@ async function fetchAllMessages(channelId: string, token: string, onProgress: (n
                 ttlMs: 30_000,
                 run: async () => {
                     const url = `https://discord.com/api/v9/channels/${channelId}/messages?limit=100${beforeId ? `&before=${beforeId}` : ""}`;
-                    const res = await fetch(url, { headers: { Authorization: token }, signal });
-                    if (!res.ok) return [];
-                    const body = await res.json() as unknown;
-                    return Array.isArray(body) ? body : [];
+                    // A non-OK response used to return [], which the pagination loop below
+                    // reads as "end of history". A 429 or 403 part-way through therefore
+                    // produced a silently truncated export with nothing reported anywhere.
+                    // Rate limits are retried per Retry-After; anything else fails loudly so
+                    // the caller can tell the user the export is incomplete.
+                    for (let attempt = 0; ; attempt++) {
+                        const res = await fetch(url, { headers: { Authorization: token }, signal });
+                        if (res.ok) {
+                            const body = await res.json() as unknown;
+                            return Array.isArray(body) ? body : [];
+                        }
+
+                        if (res.status !== 429 || attempt >= MAX_PAGE_RETRIES) {
+                            throw new Error(`Discord returned ${res.status} ${res.statusText} while reading messages`);
+                        }
+
+                        // Discord sends Retry-After for per-route limits but puts
+                        // retry_after in the JSON body for a *global* 429, with no
+                        // Retry-After header at all. Take whichever is longer, otherwise
+                        // the backoff can be far shorter than what was asked for.
+                        const headerRetry = Number(res.headers.get("retry-after"));
+                        const globalRetry = Number(res.headers.get("x-ratelimit-global-reset-after"));
+                        const body = await res.json().catch(() => null) as { retry_after?: number; } | null;
+                        const bodyRetry = Number(body?.retry_after);
+                        const wait = Math.max(
+                            Number.isFinite(headerRetry) ? headerRetry : 0,
+                            Number.isFinite(globalRetry) ? globalRetry : 0,
+                            Number.isFinite(bodyRetry) ? bodyRetry : 0
+                        );
+
+                        await sleep((wait > 0 ? wait : 2 ** attempt) * 1000);
+                    }
                 },
                 cacheable: Array.isArray,
             });
@@ -396,35 +473,7 @@ async function fetchAllMessages(channelId: string, token: string, onProgress: (n
                 const raw = Array.isArray(cached) ? cached : (cached._array ?? (typeof cached.toArray === "function" ? cached.toArray() : Object.values(cached)));
                 for (const m of raw) {
                     if (m && (m.deleted || m.state === "DELETED" || m.mlDeleted) && !messageMap.has(m.id)) {
-                        messageMap.set(m.id, {
-                            id: m.id,
-                            timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : (m.timestamp || new Date().toISOString()),
-                            editedAt: m.editedTimestamp instanceof Date ? m.editedTimestamp.toISOString() : (m.editedTimestamp || m.edited_timestamp),
-                            authorId: m.author?.id ?? "0",
-                            authorName: m.author?.globalName ?? m.author?.username ?? "Unknown",
-                            authorGlobalName: m.author?.globalName ?? undefined,
-                            authorAvatar: m.author?.avatar ?? null,
-                            content: m.content ?? "",
-                            attachments: (m.attachments ?? []).map((a: any) => ({
-                                url: a.url, filename: a.filename, size: a.size,
-                                contentType: a.content_type ?? "application/octet-stream",
-                            })),
-                            embeds: (m.embeds ?? []).map((e: any) => ({
-                                title: e.title, description: e.description, url: e.url,
-                                image: e.image?.url ?? e.thumbnail?.url, type: e.type ?? "rich",
-                            })),
-                            stickers: (m.sticker_items ?? m.stickers ?? []).map((s: any) => ({ name: s.name, id: s.id })),
-                            reactions: (m.reactions ?? []).map((r: any) => ({ emoji: r.emoji?.name ?? r.emoji?.id, count: r.count })),
-                            referencedMessage: m.messageReference ? {
-                                id: m.messageReference.message_id || m.messageReference.id || "0",
-                                authorName: "Unknown",
-                                content: ""
-                            } : undefined,
-                            pinned: m.pinned ?? false,
-                            type: m.type ?? 0,
-                            components: m.components ?? [],
-                            deleted: true
-                        });
+                        messageMap.set(m.id, fromCachedMessage(m, true));
                     }
                 }
             }
@@ -435,35 +484,7 @@ async function fetchAllMessages(channelId: string, token: string, onProgress: (n
             for (const record of idbRecords) {
                 const m = record.message;
                 if (!m || messageMap.has(record.message_id)) continue;
-                messageMap.set(record.message_id, {
-                    id: record.message_id,
-                    timestamp: m.timestamp ?? new Date().toISOString(),
-                    editedAt: m.edited_timestamp ?? undefined,
-                    authorId: m.author?.id ?? "0",
-                    authorName: m.author?.global_name ?? m.author?.globalName ?? m.author?.username ?? "Unknown",
-                    authorGlobalName: m.author?.global_name ?? m.author?.globalName ?? undefined,
-                    authorAvatar: m.author?.avatar ?? null,
-                    content: m.content ?? "",
-                    attachments: (m.attachments ?? []).map((a: any) => ({
-                        url: a.url ?? a.oldUrl ?? "", filename: a.filename ?? "file", size: a.size ?? 0,
-                        contentType: a.content_type ?? "application/octet-stream",
-                    })),
-                    embeds: (m.embeds ?? []).map((e: any) => ({
-                        title: e.title, description: e.description, url: e.url,
-                        image: e.image?.url ?? e.thumbnail?.url, type: e.type ?? "rich",
-                    })),
-                    stickers: (m.sticker_items ?? m.stickerItems ?? []).map((s: any) => ({ name: s.name, id: s.id })),
-                    reactions: (m.reactions ?? []).map((r: any) => ({ emoji: r.emoji?.name ?? r.emoji?.id, count: r.count })),
-                    referencedMessage: m.referenced_message ? {
-                        id: m.referenced_message.id ?? m.referenced_message.message_id ?? "0",
-                        authorName: m.referenced_message.author?.username ?? "Unknown",
-                        content: (m.referenced_message.content ?? "").slice(0, 100),
-                    } : undefined,
-                    pinned: m.pinned ?? false,
-                    type: m.type ?? 0,
-                    components: m.components ?? [],
-                    deleted: true
-                });
+                messageMap.set(record.message_id, fromCachedMessage({ ...m, id: record.message_id }, true));
             }
         } catch { }
     }
@@ -536,8 +557,8 @@ function toYamlString(obj: any, indent = 0): string {
 function buildMessagesHtml(messages: RichMessage[], channelName: string): string {
     const rows = messages.map(m => {
         const d = new Date(m.timestamp).toLocaleString();
-        const edited = m.editedAt ? `<span class="edited">(edited)</span>` : "";
-        const pinned = m.pinned ? `<span class="pin">[pinned]</span>` : "";
+        const edited = m.editedAt ? "<span class=\"edited\">(edited)</span>" : "";
+        const pinned = m.pinned ? "<span class=\"pin\">[pinned]</span>" : "";
         const avatarUrl = m.authorAvatar
             ? `https://cdn.discordapp.com/avatars/${m.authorId}/${m.authorAvatar}.webp?size=32`
             : `https://cdn.discordapp.com/embed/avatars/${Math.abs(Number((BigInt(m.authorId || "0") >> 22n) % 6n))}.png`;
@@ -640,19 +661,19 @@ function buildMessagesXml(messages: RichMessage[], channelName: string): string 
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<exporter type="messages">',
         `  <channel name="${escapeXml(channelName)}" exportedAt="${new Date().toISOString()}" count="${messages.length}"/>`,
-        '  <messages>'
+        "  <messages>"
     ];
     for (const m of messages) {
         lines.push(`    <message id="${m.id}" timestamp="${m.timestamp}" authorId="${m.authorId}" authorName="${escapeXml(m.authorName)}" deleted="${m.deleted ? "true" : "false"}">`);
         lines.push(`      <content>${escapeXml(m.content)}</content>`);
         if (m.attachments.length) {
-            lines.push('      <attachments>');
+            lines.push("      <attachments>");
             for (const a of m.attachments) lines.push(`        <attachment filename="${escapeXml(a.filename)}" size="${a.size}" url="${escapeXml(a.url)}"/>`);
-            lines.push('      </attachments>');
+            lines.push("      </attachments>");
         }
-        lines.push('    </message>');
+        lines.push("    </message>");
     }
-    lines.push('  </messages>', '</exporter>');
+    lines.push("  </messages>", "</exporter>");
     return lines.join("\n");
 }
 
@@ -701,18 +722,18 @@ function buildMembersHtml(members: SerializedUser[], title: string): string {
       <span class="status-dot ${statusClass}"></span>
     </div>
     <div class="user-names">
-      <div class="display-name">${escapeXml(m.nickname || m.globalName || m.username)}${m.bot ? ' <span class="bot-tag">BOT</span>' : ''}</div>
-      <div class="handle">@${escapeXml(m.username)} ${m.discriminator !== '0' ? `#${m.discriminator}` : ''} • ID: ${m.id}</div>
+      <div class="display-name">${escapeXml(m.nickname || m.globalName || m.username)}${m.bot ? ' <span class="bot-tag">BOT</span>' : ""}</div>
+      <div class="handle">@${escapeXml(m.username)} ${m.discriminator !== "0" ? `#${m.discriminator}` : ""} • ID: ${m.id}</div>
     </div>
   </div>
   <div class="card-body">
-    ${m.customStatus ? `<div class="status-text">${escapeXml(m.customStatus)}</div>` : ''}
-    ${m.bio && settings.store.includeProfileDetails ? `<div class="bio">${escapeXml(m.bio)}</div>` : ''}
-    ${m.pronouns && settings.store.includeProfileDetails ? `<div class="meta-row"><b>Pronouns:</b> ${escapeXml(m.pronouns)}</div>` : ''}
+    ${m.customStatus ? `<div class="status-text">${escapeXml(m.customStatus)}</div>` : ""}
+    ${m.bio && settings.store.includeProfileDetails ? `<div class="bio">${escapeXml(m.bio)}</div>` : ""}
+    ${m.pronouns && settings.store.includeProfileDetails ? `<div class="meta-row"><b>Pronouns:</b> ${escapeXml(m.pronouns)}</div>` : ""}
     <div class="meta-row"><b>Created:</b> ${new Date(m.createdAt).toLocaleDateString()} (${m.accountAgeDays}d ago)</div>
-    ${m.joinedAt ? `<div class="meta-row"><b>Joined:</b> ${new Date(m.joinedAt).toLocaleDateString()} (${m.serverTenureDays}d ago)</div>` : ''}
-    ${badgeTags ? `<div class="badges-row">${badgeTags}</div>` : ''}
-    ${roleTags ? `<div class="roles-row">${roleTags}</div>` : ''}
+    ${m.joinedAt ? `<div class="meta-row"><b>Joined:</b> ${new Date(m.joinedAt).toLocaleDateString()} (${m.serverTenureDays}d ago)</div>` : ""}
+    ${badgeTags ? `<div class="badges-row">${badgeTags}</div>` : ""}
+    ${roleTags ? `<div class="roles-row">${roleTags}</div>` : ""}
   </div>
 </div>`;
     }).join("");
@@ -782,7 +803,7 @@ function buildMembersXml(members: SerializedUser[], title: string): string {
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<exporter type="memberlist">',
         `  <meta title="${escapeXml(title)}" exportedAt="${new Date().toISOString()}" count="${members.length}"/>`,
-        '  <members>'
+        "  <members>"
     ];
 
     for (const m of members) {
@@ -791,14 +812,14 @@ function buildMembersXml(members: SerializedUser[], title: string): string {
         if (m.joinedAt) lines.push(`      <joinedAt>${m.joinedAt}</joinedAt>`);
         lines.push(`      <status>${escapeXml(m.status)}</status>`);
         if (m.roles.length) {
-            lines.push('      <roles>');
+            lines.push("      <roles>");
             for (const r of m.roles) lines.push(`        <role id="${r.id}" name="${escapeXml(r.name)}" colorHex="${r.colorHex}"/>`);
-            lines.push('      </roles>');
+            lines.push("      </roles>");
         }
-        lines.push('    </member>');
+        lines.push("    </member>");
     }
 
-    lines.push('  </members>', '</exporter>');
+    lines.push("  </members>", "</exporter>");
     return lines.join("\n");
 }
 
@@ -826,7 +847,7 @@ function buildMembersBbcode(members: SerializedUser[], title: string): string {
 }
 
 async function saveOrDownloadFile(content: string, filename: string, mime: string = "text/plain"): Promise<boolean> {
-    const DiscordNative = (window as any).DiscordNative;
+    const { DiscordNative } = (window as any);
     if (DiscordNative?.fileManager?.saveWithDialog) {
         try {
             const data = new TextEncoder().encode(content);
@@ -905,6 +926,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
     const [includeReactions, setIncludeReactions] = useState(settings.store.includeReactions);
     const [includeDeletedMessages, setIncludeDeletedMessages] = useState(settings.store.includeDeletedMessages);
     const [includeBots, setIncludeBots] = useState(settings.store.includeBots);
+    const [loadedOnly, setLoadedOnly] = useState(settings.store.loadedOnly);
 
     const [search, setSearch] = useState("");
     const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -991,7 +1013,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
     async function doExport() {
         if (status === "fetching") return;
         const token = getToken();
-        if ((tab === "messages" || tab === "both") && !token) {
+        if ((tab === "messages" || tab === "both") && !loadedOnly && !token) {
             setStatus("error");
             Toasts.show({ id: Toasts.genId(), type: Toasts.Type.FAILURE, message: "Token not found" });
             return;
@@ -1033,14 +1055,23 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
 
             // 2. Export Messages Only
             else if (tab === "messages") {
-                let targetChannels = channels.filter(c => selectedChannels.has(c.id));
+                const targetChannels = channels.filter(c => selectedChannels.has(c.id));
                 for (let i = 0; i < targetChannels.length; i++) {
                     if (controller.signal.aborted) return;
                     const ch = targetChannels[i];
                     const channelPrefix = targetChannels.length > 1 ? `[${i + 1}/${targetChannels.length}] ${ch.name}: ` : "";
 
-                    let msgs = await fetchAllMessages(ch.id, token, n => setProgress(`${channelPrefix}Fetching: ${n} messages...`), controller.signal);
-                    if (controller.signal.aborted) return;
+                    let msgs: RichMessage[];
+                    if (loadedOnly) {
+                        msgs = getLoadedRichMessages(ch.id);
+                        if (!msgs.length) {
+                            setProgress(`${channelPrefix}No loaded messages for ${ch.name}, skipping...`);
+                            continue;
+                        }
+                    } else {
+                        msgs = await fetchAllMessages(ch.id, token, n => setProgress(`${channelPrefix}Fetching: ${n} messages...`), controller.signal);
+                        if (controller.signal.aborted) return;
+                    }
 
                     if (!includeMedia) msgs = msgs.map(m => ({ ...m, attachments: [] }));
                     if (!includeEmbeds) msgs = msgs.map(m => ({ ...m, embeds: [] }));
@@ -1092,8 +1123,17 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                     if (controller.signal.aborted) return;
                     const ch = targetChannels[i];
                     setProgress(`Fetching ${ch.name}...`);
-                    let msgs = await fetchAllMessages(ch.id, token, n => setProgress(`Fetching ${ch.name}: ${n} messages...`), controller.signal);
-                    if (controller.signal.aborted) return;
+                    let msgs: RichMessage[];
+                    if (loadedOnly) {
+                        msgs = getLoadedRichMessages(ch.id);
+                        if (!msgs.length) {
+                            setProgress(`No loaded messages for ${ch.name}, skipping...`);
+                            continue;
+                        }
+                    } else {
+                        msgs = await fetchAllMessages(ch.id, token, n => setProgress(`Fetching ${ch.name}: ${n} messages...`), controller.signal);
+                        if (controller.signal.aborted) return;
+                    }
 
                     if (!includeMedia) msgs = msgs.map(m => ({ ...m, attachments: [] }));
                     if (!includeEmbeds) msgs = msgs.map(m => ({ ...m, embeds: [] }));
@@ -1168,14 +1208,16 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
     });
 
     return (
-        <ModalRoot {...rootProps} size="medium">
-            <ModalHeader separator={false}>
-                <Forms.FormTitle tag="h4" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+        <Modal
+            {...rootProps}
+            onClose={closeModal}
+            size="md"
+            title={
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <ExportIcon width={20} height={20} /> Exporter
-                </Forms.FormTitle>
-                <ModalCloseButton onClick={closeModal} />
-            </ModalHeader>
-
+                </div>
+            }
+        >
             <ModalContent style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "16px" }}>
                 {/* 1. TabBar */}
                 <TabBar
@@ -1221,7 +1263,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                             </Forms.FormTitle>
                             <ScrollerThin style={{
                                 maxHeight: 180,
-                                background: "var(--background-secondary, #2b2d31)",
+                                background: "var(--background-secondary, var(--background-secondary-alt))",
                                 borderRadius: "var(--radius-sm, 4px)",
                                 padding: "8px",
                                 display: "flex",
@@ -1233,7 +1275,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                                     const isSel = selectedChannels.has(c.id);
                                     const isHov = hoveredId === c.id;
                                     const bg = isSel
-                                        ? (isHov ? "var(--background-modifier-selected-hover, rgba(88, 101, 242, 0.28))" : "var(--background-modifier-selected, rgba(88, 101, 242, 0.18))")
+                                        ? (isHov ? "var(--background-modifier-selected-hover, color-mix(in hsl, var(--background-brand) 28%, transparent)))" : "var(--background-modifier-selected, color-mix(in hsl, var(--background-brand) 18%, transparent))")
                                         : (isHov ? "var(--background-modifier-hover, rgba(255, 255, 255, 0.08))" : "transparent");
                                     return (
                                         <div
@@ -1249,7 +1291,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                                             onMouseLeave={() => setHoveredId(null)}
                                         >
                                             <Text variant="text-sm/medium">{c.name}</Text>
-                                            {isSel && <Text variant="text-sm/bold" style={{ color: "var(--brand-experiment, #5865f2)" }}>✓</Text>}
+                                            {isSel && <Text variant="text-sm/bold" style={{ color: "var(--brand-experiment, var(--background-brand))" }}>✓</Text>}
                                         </div>
                                     );
                                 })}
@@ -1261,7 +1303,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                             </Forms.FormTitle>
                             <ScrollerThin style={{
                                 maxHeight: 180,
-                                background: "var(--background-secondary, #2b2d31)",
+                                background: "var(--background-secondary, var(--background-secondary-alt))",
                                 borderRadius: "var(--radius-sm, 4px)",
                                 padding: "8px",
                                 display: "flex",
@@ -1273,7 +1315,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                                     const isSel = selectedMembers.has(user.id);
                                     const isHov = hoveredId === user.id;
                                     const bg = isSel
-                                        ? (isHov ? "var(--background-modifier-selected-hover, rgba(88, 101, 242, 0.28))" : "var(--background-modifier-selected, rgba(88, 101, 242, 0.18))")
+                                        ? (isHov ? "var(--background-modifier-selected-hover, color-mix(in hsl, var(--background-brand) 28%, transparent)))" : "var(--background-modifier-selected, color-mix(in hsl, var(--background-brand) 18%, transparent))")
                                         : (isHov ? "var(--background-modifier-hover, rgba(255, 255, 255, 0.08))" : "transparent");
                                     return (
                                         <div
@@ -1292,7 +1334,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                                                 <Text variant="text-sm/medium">{member.nick || user.globalName || user.username}{user.bot ? " [BOT]" : ""}</Text>
                                                 <Text variant="text-xs/normal" style={{ color: "var(--text-muted)" }}>@{user.username}</Text>
                                             </div>
-                                            {isSel && <Text variant="text-sm/bold" style={{ color: "var(--brand-experiment, #5865f2)" }}>✓</Text>}
+                                            {isSel && <Text variant="text-sm/bold" style={{ color: "var(--brand-experiment, var(--background-brand))" }}>✓</Text>}
                                         </div>
                                     );
                                 })}
@@ -1305,7 +1347,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                     >
                         <ScrollerThin style={{
                             maxHeight: 180,
-                            background: "var(--background-secondary, #2b2d31)",
+                            background: "var(--background-secondary, var(--background-secondary-alt))",
                             borderRadius: "var(--radius-sm, 4px)",
                             padding: "8px",
                             display: "flex",
@@ -1319,7 +1361,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                                         const isSel = selectedChannels.has(c.id);
                                         const isHov = hoveredId === c.id;
                                         const bg = isSel
-                                            ? (isHov ? "var(--background-modifier-selected-hover, rgba(88, 101, 242, 0.28))" : "var(--background-modifier-selected, rgba(88, 101, 242, 0.18))")
+                                            ? (isHov ? "var(--background-modifier-selected-hover, color-mix(in hsl, var(--background-brand) 28%, transparent)))" : "var(--background-modifier-selected, color-mix(in hsl, var(--background-brand) 18%, transparent))")
                                             : (isHov ? "var(--background-modifier-hover, rgba(255, 255, 255, 0.08))" : "transparent");
                                         return (
                                             <div
@@ -1335,7 +1377,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                                                 onMouseLeave={() => setHoveredId(null)}
                                             >
                                                 <Text variant="text-sm/medium">{c.name}</Text>
-                                                {isSel && <Text variant="text-sm/bold" style={{ color: "var(--brand-experiment, #5865f2)" }}>✓</Text>}
+                                                {isSel && <Text variant="text-sm/bold" style={{ color: "var(--brand-experiment, var(--background-brand))" }}>✓</Text>}
                                             </div>
                                         );
                                     })}
@@ -1348,7 +1390,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                                         const isSel = selectedMembers.has(user.id);
                                         const isHov = hoveredId === user.id;
                                         const bg = isSel
-                                            ? (isHov ? "var(--background-modifier-selected-hover, rgba(88, 101, 242, 0.28))" : "var(--background-modifier-selected, rgba(88, 101, 242, 0.18))")
+                                            ? (isHov ? "var(--background-modifier-selected-hover, color-mix(in hsl, var(--background-brand) 28%, transparent)))" : "var(--background-modifier-selected, color-mix(in hsl, var(--background-brand) 18%, transparent))")
                                             : (isHov ? "var(--background-modifier-hover, rgba(255, 255, 255, 0.08))" : "transparent");
                                         return (
                                             <div
@@ -1367,7 +1409,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                                                     <Text variant="text-sm/medium">{member.nick || user.globalName || user.username}{user.bot ? " [BOT]" : ""}</Text>
                                                     <Text variant="text-xs/normal" style={{ color: "var(--text-muted)" }}>@{user.username} • ID: {user.id}</Text>
                                                 </div>
-                                                {isSel && <Text variant="text-sm/bold" style={{ color: "var(--brand-experiment, #5865f2)" }}>✓</Text>}
+                                                {isSel && <Text variant="text-sm/bold" style={{ color: "var(--brand-experiment, var(--background-brand))" }}>✓</Text>}
                                             </div>
                                         );
                                     })}
@@ -1437,6 +1479,12 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                         title="Include Bots"
                         description="Include bot accounts in member list exports"
                     />
+                    <FormSwitch
+                        value={loadedOnly}
+                        onChange={setLoadedOnly}
+                        title="Loaded Messages Only"
+                        description="Export only messages already loaded in Discord without fetching full history"
+                    />
                 </Forms.FormSection>
             </ModalContent>
 
@@ -1466,7 +1514,7 @@ export function ExporterModal({ rootProps, initialTab }: { rootProps: any; initi
                     </div>
                 </div>
             </ModalFooter>
-        </ModalRoot>
+        </Modal>
     );
 }
 
@@ -1536,9 +1584,8 @@ function openCurrentChannelMenu(e: React.MouseEvent) {
     ContextMenuApi.openContextMenu(e, () => <ExporterMenu channelId={channelId} />);
 }
 
-const ExporterChatBarButton = (({ channel, isMainChat }: any) => {
-    const loc = settings.store.location;
-    if (loc === "disabled" || loc === "headerbar" || loc === "channeltoolbar") return null;
+const ExporterChatBarButton: ChatBarButtonFactory = ({ isMainChat }) => {
+    if (!isMainChat || settings.store.location !== "chatbar") return null;
 
     return (
         <ChatBarButton
@@ -1549,7 +1596,7 @@ const ExporterChatBarButton = (({ channel, isMainChat }: any) => {
             <ExportIcon width={20} height={20} />
         </ChatBarButton>
     );
-}) as any;
+};
 
 export default definePlugin({
     name: "Exporter",

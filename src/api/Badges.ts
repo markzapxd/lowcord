@@ -72,16 +72,69 @@ function isRenderableBadge(badge: Partial<ProfileBadge>) {
         || typeof badge.iconSrc === "string" && badge.iconSrc.length > 0;
 }
 
+/**
+ * `ErrorBoundary.wrap` returns a brand-new function component on every call, so wrapping
+ * inline in `normalizeBadges` gave every badge a fresh component type on every render.
+ * Discord calls this once per message author, and React treats a changed component type
+ * as a different component: it unmounted and remounted the whole badge subtree each pass
+ * (losing internal state) and allocated a closure per badge per author per render.
+ *
+ * The props are the same constant object at this call site, so caching on the source
+ * component is exact. `ErrorBoundary.wrap` itself is untouched - other callers pass
+ * varying props and must keep getting fresh wrappers.
+ */
+const wrappedBadgeComponents = new WeakMap<ComponentType<any>, ComponentType<any>>();
+const wrappedBadgeOutputs = new WeakSet<ComponentType<any>>();
+
+/** Idempotent, so a component that was already wrapped at registration is not wrapped again. */
+function wrapBadgeComponent(component: ComponentType<any>) {
+    if (wrappedBadgeOutputs.has(component)) return component;
+
+    const cached = wrappedBadgeComponents.get(component);
+    if (cached) return cached;
+
+    const wrapped = ErrorBoundary.wrap(component, { noop: true });
+    wrappedBadgeComponents.set(component, wrapped);
+    wrappedBadgeOutputs.add(wrapped);
+    return wrapped;
+}
+
 function normalizeBadges(rawBadges: unknown[] | undefined, args: BadgeUserArgs, offset = 0) {
-    return (rawBadges ?? [])
-        .filter((badge): badge is Partial<ProfileBadge> => typeof badge === "object" && badge != null)
-        .map((badge, index) => ({
+    return appendBadges([], rawBadges, args, offset);
+}
+
+/**
+ * Same normalisation as {@link normalizeBadges}, but appended into a caller-owned
+ * array instead of returning a new one.
+ *
+ * `_getBadges` runs for every rendered author, and it used to build four
+ * intermediate arrays (donor, equicord donor, custom, global) plus a five-way
+ * spread to reassemble them. All of that was thrown away immediately.
+ */
+function appendBadges(
+    out: ProfileBadge[],
+    rawBadges: unknown[] | undefined,
+    args: BadgeUserArgs,
+    offset = 0,
+): ProfileBadge[] {
+    if (!rawBadges?.length) return out;
+
+    let index = offset;
+    for (const badge of rawBadges) {
+        if (typeof badge !== "object" || badge == null) continue;
+        const partial = badge as Partial<ProfileBadge>;
+
+        const normalized = {
             ...args,
-            ...badge,
-            id: getBadgeId(badge, args.userId, offset + index),
-            component: badge.component && ErrorBoundary.wrap(badge.component, { noop: true })
-        }))
-        .filter(isRenderableBadge);
+            ...partial,
+            id: getBadgeId(partial, args.userId, index),
+            component: partial.component && wrapBadgeComponent(partial.component)
+        };
+        if (isRenderableBadge(normalized)) out.push(normalized);
+        index++;
+    }
+
+    return out;
 }
 
 /**
@@ -89,7 +142,7 @@ function normalizeBadges(rawBadges: unknown[] | undefined, args: BadgeUserArgs, 
  * @param badge The badge to register
  */
 export function addProfileBadge(badge: ProfileBadge) {
-    badge.component &&= ErrorBoundary.wrap(badge.component, { noop: true });
+    badge.component &&= wrapBadgeComponent(badge.component);
     Badges.add(badge);
 }
 
@@ -121,21 +174,24 @@ export function _getBadges(args: BadgeUserArgs) {
         }
     }
 
-    const donorBadges = normalizeBadges(BadgeAPIPlugin.getDonorBadges(args.userId), args, badges.length);
-    const equicordDonorBadges = normalizeBadges(BadgeAPIPlugin.getEquicordDonorBadges(args.userId), args, badges.length);
-    const testcordCustomBadges = normalizeBadges(BadgeAPIPlugin.getTestCordCustomBadges(args.userId), args, badges.length);
-    const GlobalBadges = isPluginEnabled(globalBadges.name)
-        ? normalizeBadges(globalBadges.getGlobalBadges(args.userId), args, badges.length)
-        : [];
+    // Read in the same order as before; only the destination changed. The offset
+    // is intentionally `badges.length` for all four sources, exactly as it was
+    // when each produced its own array, so badge ids are unchanged.
+    const offset = badges.length;
+    const donorBadges = BadgeAPIPlugin.getDonorBadges(args.userId);
+    const equicordDonorBadges = BadgeAPIPlugin.getEquicordDonorBadges(args.userId);
+    const testcordCustomBadges = BadgeAPIPlugin.getTestCordCustomBadges(args.userId);
+    const globalEnabled = isPluginEnabled(globalBadges.name);
+    const globalBadgesForUser = globalEnabled ? globalBadges.getGlobalBadges(args.userId) : undefined;
 
-    // Build final array with prepended groups in correct order
-    return [
-        ...testcordCustomBadges,
-        ...equicordDonorBadges,
-        ...donorBadges,
-        ...GlobalBadges,
-        ...badges
-    ];
+    const out: ProfileBadge[] = [];
+    appendBadges(out, testcordCustomBadges, args, offset);
+    appendBadges(out, equicordDonorBadges, args, offset);
+    appendBadges(out, donorBadges, args, offset);
+    appendBadges(out, globalBadgesForUser, args, offset);
+    out.push(...badges);
+
+    return out;
 }
 
 export interface BadgeUserArgs {
